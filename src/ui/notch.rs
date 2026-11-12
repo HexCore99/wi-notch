@@ -1,4 +1,5 @@
 use super::animation::SizeAnimation;
+use chrono::Local;
 use gpui::{prelude::*, *};
 
 pub struct Notch {
@@ -48,7 +49,7 @@ impl Render for Notch {
             .bg(rgb(0x000000))
             .rounded_xl()
             .text_color(rgb(0xffffff))
-            .child("Window Notch")
+            .child(Local::now().format("%I:%M:%p").to_string())
             .on_hover(cx.listener(|this, hovered, _window, cx| {
                 if this.expanded == *hovered {
                     return;

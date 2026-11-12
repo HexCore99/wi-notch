@@ -13,7 +13,7 @@ fn main() {
         let screen = display.bounds();
 
         let x = screen.origin.x + (screen.size.width - px(width)) / 2.0;
-        let y = screen.origin.y + px(10.0);
+        let y = screen.origin.y + px(100.0);
 
         let bounds = Bounds::new(point(x, y), size(px(width), px(height)));
 

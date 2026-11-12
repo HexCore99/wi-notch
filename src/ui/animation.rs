@@ -16,7 +16,7 @@ impl SizeAnimation {
     }
 
     pub fn sample(&self) -> (f32, f32, bool) {
-        let progress = (self.start_time.elapsed().as_secs_f32() / 0.250).min(1.0);
+        let progress = (self.start_time.elapsed().as_secs_f32() / 0.520).min(1.0);
 
         // let eased = 1.0 - (1.0 - progress).powi(3); // ease out cubic
         /*
@@ -24,7 +24,14 @@ impl SizeAnimation {
          * This is a smoothstep function that eases in and out.
          *
          */
-        let eased = progress * progress * (3.0 - 2.0 * progress);
+        // let eased = progress * progress * (3.0 - 2.0 * progress);
+        let smooth = progress * progress * (3.0 - 2.0 * progress);
+
+        let strength = 1.2;
+        let shifted = smooth - 1.0;
+
+        // Back easing: pass the target slightly, then settle back.
+        let eased = 1.0 + (strength + 1.0) * shifted.powi(3) + strength * shifted.powi(2);
 
         let width = self.from.0 + (self.to.0 - self.from.0) * eased;
         let height = self.from.1 + (self.to.1 - self.from.1) * eased;
