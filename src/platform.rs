@@ -1,13 +1,8 @@
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect,  // get the content area
-    GetWindowRect,  // get the entire window area
-    HWND_TOPMOST,   // place the window above all non-topmost windows
-    SWP_NOACTIVATE, // do not activate the window
-    SWP_NOMOVE,     // do not change the window's position
-    SWP_NOSIZE,     // do not change the window's size
-    SWP_NOZORDER,   // do not change the window's z-order
-    SetWindowPos,
+    GetClientRect, GetWindowRect, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_NOZORDER, SetWindowPos,
 };
 use windows::Win32::{
     Foundation::{COLORREF, HWND, RECT},
@@ -15,7 +10,34 @@ use windows::Win32::{
         DWMNCRP_DISABLED, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DWMWA_NCRENDERING_POLICY,
         DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DwmSetWindowAttribute,
     },
+    UI::{
+        Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
+        WindowsAndMessaging::{HTCLIENT, WM_NCDESTROY, WM_NCHITTEST},
+    },
 };
+
+unsafe extern "system" fn notch_window_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    laparam: LPARAM,
+    subclass_id: usize,
+    _data: usize,
+) -> LRESULT {
+    if message == WM_NCHITTEST {
+        return LRESULT(HTCLIENT as isize);
+    } else if message == WM_NCDESTROY {
+        unsafe {
+            let _ = RemoveWindowSubclass(hwnd, Some(notch_window_proc), subclass_id);
+        }
+    }
+
+    /*
+     * DefSubclassProc -> Default Subclass Procedure
+     * pass unhandled messages to the next handler. e.g(gpui)
+     */
+    unsafe { DefSubclassProc(hwnd, message, wparam, laparam) }
+}
 
 pub fn resize_notch(
     window: &gpui::Window,
@@ -123,6 +145,10 @@ pub fn configure_window(window: &gpui::Window) -> Result<(), Box<dyn std::error:
             std::ptr::from_ref(&corners).cast(),
             std::mem::size_of_val(&corners) as u32,
         )?;
+
+        if !SetWindowSubclass(hwnd, Some(notch_window_proc), 1, 0).as_bool() {
+            return Err("Failed to install notch window handler".into());
+        }
 
         // Set the window to be topmost without activating it.
         SetWindowPos(

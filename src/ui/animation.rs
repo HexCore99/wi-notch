@@ -19,7 +19,12 @@ impl SizeAnimation {
         let progress = (self.start_time.elapsed().as_secs_f32() / 0.250).min(1.0);
 
         // let eased = 1.0 - (1.0 - progress).powi(3); // ease out cubic
-        let eased = progress * progress * (3.0 - 2.0 * progress); // ease in-out
+        /*
+         * smoothing function: 3p^2 - 2p^3 -> where p is progress
+         * This is a smoothstep function that eases in and out.
+         *
+         */
+        let eased = progress * progress * (3.0 - 2.0 * progress);
 
         let width = self.from.0 + (self.to.0 - self.from.0) * eased;
         let height = self.from.1 + (self.to.1 - self.from.1) * eased;
