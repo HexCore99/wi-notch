@@ -1,7 +1,4 @@
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use windows::Win32::Graphics::Gdi::OUT_RASTER_PRECIS;
-use windows::Win32::Security::Cryptography::KP_CLIENT_RANDOM;
-use windows::Win32::UI::Shell::APPLICATION_VIEW_MIN_WIDTH;
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClientRect,  // get the content area
     GetWindowRect,  // get the entire window area
@@ -54,7 +51,11 @@ pub fn resize_notch(
     let new_width = (width * scale).round() as i32 + frame_width;
     let new_height = (height * scale).round() as i32 + frame_height;
 
-    let x = outer.left + (outer_width - new_width) / 2;
+    let display = cx.primary_display().ok_or("No primary display found")?;
+    let screen = display.bounds();
+    let center_x = f32::from(screen.origin.x + screen.size.width / 2.0) * scale;
+
+    let x = (center_x - new_width as f32 / 2.0).round() as i32;
     let y = outer.top;
 
     // Run after current gpui update has finished
