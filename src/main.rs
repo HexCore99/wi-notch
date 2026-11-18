@@ -29,7 +29,7 @@ fn main() {
             },
             |window, cx| {
                 platform::configure_window(window).expect("Failed to remove the window border");
-                cx.new(|_| Notch::new(width, height))
+                cx.new(|cx| Notch::new(width, height, cx))
             },
         )
         .expect("Failed to open the notch window");

@@ -1,5 +1,5 @@
 use super::animation::SizeAnimation;
-use chrono::Local;
+use crate::ui::clock::Clock;
 use gpui::{prelude::*, *};
 
 pub struct Notch {
@@ -9,16 +9,20 @@ pub struct Notch {
     compact_size: (f32, f32),
     expanded: bool,
     animation: Option<SizeAnimation>,
+
+    clock: Entity<Clock>,
 }
 
 impl Notch {
-    pub fn new(width: f32, height: f32) -> Self {
+    pub fn new(width: f32, height: f32, cx: &mut Context<Self>) -> Self {
         Self {
             width,
             height,
             compact_size: (width, height),
             expanded: false,
             animation: None,
+
+            clock: cx.new(|_| Clock),
         }
     }
 }
@@ -49,7 +53,8 @@ impl Render for Notch {
             .bg(rgb(0x000000))
             .rounded_xl()
             .text_color(rgb(0xffffff))
-            .child(Local::now().format("%I:%M:%p").to_string())
+            //        Local::now().format("%I:%M:%p").to_string()
+            .child(self.clock.clone())
             .on_hover(cx.listener(|this, hovered, _window, cx| {
                 if this.expanded == *hovered {
                     return;
