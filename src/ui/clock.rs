@@ -12,22 +12,10 @@ impl Clock {
         let task = cx.spawn(async move |this, cx| {
             loop {
                 let now = Local::now();
-                let hour = now.hour();
-                let minute = now.minute();
-                let second = now.second();
-                println!(
-                    "Current second: {} at {} {} {} ",
-                    second, hour, minute, second
-                );
-                let remaining: u64;
-                if second != 0 {
-                    remaining = 60 as u64 - second as u64;
-                } else {
-                    remaining = 60 as u64;
-                }
-                cx.background_executor()
-                    .timer(Duration::from_secs(remaining))
-                    .await;
+                let remaining = Duration::from_secs(60 - now.second() as u64)
+                    - Duration::from_nanos(now.nanosecond() as u64);
+
+                cx.background_executor().timer(remaining).await;
 
                 if this
                     .update(cx, |_, cx| {
