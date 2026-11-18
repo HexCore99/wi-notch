@@ -22,7 +22,7 @@ impl Notch {
             expanded: false,
             animation: None,
 
-            clock: cx.new(|_| Clock),
+            clock: cx.new(Clock::new),
         }
     }
 }
