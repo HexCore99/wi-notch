@@ -1,5 +1,5 @@
-mod platform;
 mod ui;
+mod windows;
 
 use gpui::{prelude::*, *};
 use ui::notch::Notch;
@@ -28,7 +28,8 @@ fn main() {
                 ..Default::default()
             },
             |window, cx| {
-                platform::configure_window(window).expect("Failed to remove the window border");
+                windows::window::configure_window(window)
+                    .expect("Failed to remove the window border");
                 cx.new(|cx| Notch::new(width, height, cx))
             },
         )

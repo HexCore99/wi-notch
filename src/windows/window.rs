@@ -1,10 +1,9 @@
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::{
+use ::windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+use ::windows::Win32::UI::WindowsAndMessaging::{
     GetClientRect, GetWindowRect, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
     SWP_NOZORDER, SetWindowPos,
 };
-use windows::Win32::{
+use ::windows::Win32::{
     Foundation::{COLORREF, HWND, RECT},
     Graphics::Dwm::{
         DWMNCRP_DISABLED, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DWMWA_NCRENDERING_POLICY,
@@ -15,6 +14,7 @@ use windows::Win32::{
         WindowsAndMessaging::{HTCLIENT, WM_NCDESTROY, WM_NCHITTEST},
     },
 };
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 unsafe extern "system" fn notch_window_proc(
     hwnd: HWND,
