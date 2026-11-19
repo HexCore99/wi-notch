@@ -2,11 +2,10 @@ use super::animation::SizeAnimation;
 use super::music_player::MusicPlayer;
 use super::settings::SettingsView;
 use crate::appearance::{AppearanceSettings, Corners};
+use crate::notch_geometry::EXPANDED_SIZE;
 use crate::ui::clock::Clock;
 use chrono::Local;
 use gpui::{prelude::*, *};
-
-const EXPANDED_SIZE: (f32, f32) = (340.0, 162.0);
 
 pub struct Notch {
     pub width: f32,
@@ -15,6 +14,7 @@ pub struct Notch {
     compact_size: (f32, f32),
     expanded: bool,
     animation: Option<SizeAnimation>,
+    last_top_gap: Option<u32>,
 
     clock: Entity<Clock>,
     music_player: Entity<MusicPlayer>,
@@ -36,6 +36,7 @@ impl Notch {
             compact_size: (width, height),
             expanded: false,
             animation: None,
+            last_top_gap: None,
 
             clock: cx.new(Clock::new),
             music_player: cx.new(|_| MusicPlayer::default()),
@@ -65,18 +66,31 @@ impl Notch {
 
 impl Render for Notch {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let appearance = *self.appearance.read(cx);
+        let needs_layout =
+            self.animation.is_some() || self.last_top_gap != Some(appearance.top_gap);
         if let Some(animation) = &self.animation {
             let (width, height, finished) = animation.sample();
             self.width = width;
             self.height = height;
 
-            crate::windows::window::resize_notch(window, cx, width, height)
-                .expect("Failed to resize the notch");
-
             if finished {
                 self.animation = None;
             } else {
                 window.request_animation_frame();
+            }
+        }
+
+        if needs_layout {
+            self.last_top_gap = Some(appearance.top_gap);
+            if let Err(error) = crate::windows::window::resize_notch(
+                window,
+                cx,
+                self.width,
+                self.height,
+                appearance.top_gap,
+            ) {
+                eprintln!("Failed to position the notch: {error}");
             }
         }
 
@@ -86,7 +100,6 @@ impl Render for Notch {
 
         let date_opacity = ((expansion - 0.25) / 0.55).clamp(0.0, 1.0);
         let player_opacity = ((expansion - 0.6) / 0.35).clamp(0.0, 1.0);
-        let appearance = *self.appearance.read(cx);
 
         div()
             .id("notch")

@@ -1,9 +1,11 @@
 mod appearance;
+mod notch_geometry;
 mod ui;
 mod windows;
 
 use appearance::AppearanceSettings;
 use gpui::{prelude::*, *};
+use notch_geometry::notch_origin;
 use ui::notch::Notch;
 
 fn main() {
@@ -12,13 +14,10 @@ fn main() {
         let height = 35.0;
 
         let display = cx.primary_display().expect("Failed to get primary display");
-        let screen = display.bounds();
-
-        let x = screen.origin.x + (screen.size.width - px(width)) / 2.0;
-        let y = screen.origin.y + px(100.0);
-
-        let bounds = Bounds::new(point(x, y), size(px(width), px(height)));
-        let appearance = cx.new(|_| AppearanceSettings::load());
+        let settings = AppearanceSettings::load();
+        let origin = notch_origin(display.bounds(), px(width), settings.top_gap);
+        let bounds = Bounds::new(origin, size(px(width), px(height)));
+        let appearance = cx.new(|_| settings);
 
         cx.open_window(
             WindowOptions {

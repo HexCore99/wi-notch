@@ -31,11 +31,22 @@ pub enum Corners {
     Square,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AppearanceSettings {
     pub background: Background,
     pub corners: Corners,
+    pub top_gap: u32,
+}
+
+impl Default for AppearanceSettings {
+    fn default() -> Self {
+        Self {
+            background: Background::Black,
+            corners: Corners::Rounded,
+            top_gap: 100,
+        }
+    }
 }
 
 impl AppearanceSettings {
@@ -89,11 +100,27 @@ mod tests {
         let defaults = AppearanceSettings {
             background: Background::Black,
             corners: Corners::Rounded,
+            top_gap: 100,
         };
 
         assert_eq!(AppearanceSettings::load_from(directory.path()), defaults);
         fs::write(directory.path().join("settings.json"), "invalid JSON")?;
         assert_eq!(AppearanceSettings::load_from(directory.path()), defaults);
+        Ok(())
+    }
+
+    #[test]
+    fn older_settings_get_the_default_gap() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        fs::write(
+            directory.path().join("settings.json"),
+            r#"{"background":"charcoal","corners":"square"}"#,
+        )?;
+
+        let settings = AppearanceSettings::load_from(directory.path());
+        assert_eq!(settings.background, Background::Charcoal);
+        assert_eq!(settings.corners, Corners::Square);
+        assert_eq!(settings.top_gap, 100);
         Ok(())
     }
 
@@ -104,6 +131,7 @@ mod tests {
         let settings = AppearanceSettings {
             background: Background::Charcoal,
             corners: Corners::Square,
+            top_gap: 125,
         };
 
         settings.save_to(&directory)?;

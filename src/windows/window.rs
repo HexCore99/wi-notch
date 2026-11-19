@@ -1,4 +1,5 @@
-use ::windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+use ::windows::Win32::Foundation::{LPARAM, LRESULT, POINT, WPARAM};
+use ::windows::Win32::Graphics::Gdi::ClientToScreen;
 use ::windows::Win32::UI::WindowsAndMessaging::{
     GetClientRect, GetWindowRect, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
     SWP_NOZORDER, SetWindowPos,
@@ -15,6 +16,8 @@ use ::windows::Win32::{
     },
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+use crate::notch_geometry::notch_origin;
 
 unsafe extern "system" fn notch_window_proc(
     hwnd: HWND,
@@ -52,15 +55,18 @@ pub fn resize_notch(
     cx: &gpui::App,
     width: f32,
     height: f32,
+    top_gap: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let hwnd = window_hwnd(window)?;
 
     let mut outer = RECT::default();
     let mut inner = RECT::default();
+    let mut client_origin = POINT::default();
 
     unsafe {
         GetWindowRect(hwnd, &mut outer)?;
         GetClientRect(hwnd, &mut inner)?;
+        ClientToScreen(hwnd, &mut client_origin).ok()?;
     }
 
     let outer_width = outer.right - outer.left;
@@ -77,11 +83,10 @@ pub fn resize_notch(
     let new_height = (height * scale).round() as i32 + frame_height;
 
     let display = cx.primary_display().ok_or("No primary display found")?;
-    let screen = display.bounds();
-    let center_x = f32::from(screen.origin.x + screen.size.width / 2.0) * scale;
-
-    let x = (center_x - new_width as f32 / 2.0).round() as i32;
-    let y = outer.top;
+    let origin = notch_origin(display.bounds(), gpui::px(width), top_gap);
+    // SetWindowPos moves the outer window. Offset it to place the visible client area.
+    let x = (f32::from(origin.x) * scale).round() as i32 - (client_origin.x - outer.left);
+    let y = (f32::from(origin.y) * scale).round() as i32 - (client_origin.y - outer.top);
 
     // Run after current gpui update has finished
     cx.foreground_executor()
@@ -98,7 +103,7 @@ pub fn resize_notch(
                 )
             };
             if let Err(error) = result {
-                eprintln!("Failed to resize the notch: {error}");
+                eprintln!("Failed to position the notch: {error}");
             }
         })
         .detach();
