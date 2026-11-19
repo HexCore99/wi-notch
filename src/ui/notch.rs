@@ -434,33 +434,34 @@ impl Render for Notch {
                     },
                 ))
             })
-            .child(
-                self.notifications
-                    .bell()
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_notifications(cx))),
-            )
             .when(
                 matches!(self.mode, Mode::Music | Mode::Notifications) && player_opacity > 0.0,
                 |notch| {
-                    notch.child(
-                        div()
-                            .id("open-settings")
-                            .absolute()
-                            .top(px(5.0))
-                            .right(px(12.0))
-                            .size(px(25.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_md()
-                            .opacity(player_opacity)
-                            .cursor_pointer()
-                            .hover(|style| style.bg(rgba(0xffffff20)))
-                            .font_family("Segoe UI Symbol")
-                            .text_size(px(16.0))
-                            .child("⚙")
-                            .on_click(cx.listener(|this, _, _, cx| this.open_settings(cx))),
-                    )
+                    notch
+                        .child(
+                            self.notifications.bell().opacity(player_opacity).on_click(
+                                cx.listener(|this, _, _, cx| this.toggle_notifications(cx)),
+                            ),
+                        )
+                        .child(
+                            div()
+                                .id("open-settings")
+                                .absolute()
+                                .top(px(5.0))
+                                .right(px(12.0))
+                                .size(px(25.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_md()
+                                .opacity(player_opacity)
+                                .cursor_pointer()
+                                .hover(|style| style.bg(rgba(0xffffff20)))
+                                .font_family("Segoe UI Symbol")
+                                .text_size(px(16.0))
+                                .child("⚙")
+                                .on_click(cx.listener(|this, _, _, cx| this.open_settings(cx))),
+                        )
                 },
             )
     }
