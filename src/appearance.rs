@@ -31,12 +31,14 @@ pub enum Corners {
     Square,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AppearanceSettings {
     pub background: Background,
     pub corners: Corners,
     pub top_gap: u32,
+    pub offset: u32,
+    pub monitor: Option<String>,
 }
 
 impl Default for AppearanceSettings {
@@ -44,7 +46,9 @@ impl Default for AppearanceSettings {
         Self {
             background: Background::Black,
             corners: Corners::Rounded,
-            top_gap: 100,
+            top_gap: 0,
+            offset: 5,
+            monitor: None,
         }
     }
 }
@@ -57,7 +61,7 @@ impl AppearanceSettings {
             .unwrap_or_default()
     }
 
-    pub fn save(self) -> io::Result<()> {
+    pub fn save(&self) -> io::Result<()> {
         let directory =
             settings_directory().ok_or_else(|| io::Error::other("LOCALAPPDATA is unavailable"))?;
         self.save_to(&directory)
@@ -70,8 +74,8 @@ impl AppearanceSettings {
             .unwrap_or_default()
     }
 
-    fn save_to(self, directory: &Path) -> io::Result<()> {
-        let bytes = serde_json::to_vec_pretty(&self)?;
+    fn save_to(&self, directory: &Path) -> io::Result<()> {
+        let bytes = serde_json::to_vec_pretty(self)?;
         fs::create_dir_all(directory)?;
         let temp = directory.join(format!("settings.{}.tmp", process::id()));
         let result = fs::write(&temp, bytes)
@@ -100,7 +104,9 @@ mod tests {
         let defaults = AppearanceSettings {
             background: Background::Black,
             corners: Corners::Rounded,
-            top_gap: 100,
+            top_gap: 0,
+            offset: 5,
+            monitor: None,
         };
 
         assert_eq!(AppearanceSettings::load_from(directory.path()), defaults);
@@ -120,7 +126,17 @@ mod tests {
         let settings = AppearanceSettings::load_from(directory.path());
         assert_eq!(settings.background, Background::Charcoal);
         assert_eq!(settings.corners, Corners::Square);
-        assert_eq!(settings.top_gap, 100);
+        assert_eq!(settings.top_gap, 0);
+        assert_eq!(settings.offset, 5);
+        assert_eq!(settings.monitor, None);
+        Ok(())
+    }
+
+    #[test]
+    fn explicitly_saved_gap_survives_new_defaults() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        fs::write(directory.path().join("settings.json"), r#"{"top_gap":100}"#)?;
+        assert_eq!(AppearanceSettings::load_from(directory.path()).top_gap, 100);
         Ok(())
     }
 
@@ -132,6 +148,8 @@ mod tests {
             background: Background::Charcoal,
             corners: Corners::Square,
             top_gap: 125,
+            offset: 15,
+            monitor: Some("DISPLAY2".into()),
         };
 
         settings.save_to(&directory)?;

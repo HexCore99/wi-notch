@@ -2,11 +2,13 @@ use gpui::{prelude::*, *};
 
 use super::{save_error, setting_row, update_settings};
 use crate::appearance::AppearanceSettings;
-use crate::notch_geometry::{TOP_GAP_STEP, max_top_gap};
+use crate::notch_geometry::max_top_gap;
+use crate::windows::display::{Monitor, monitors, selected_monitor};
 
 pub(super) struct DisplayPage {
     appearance: Entity<AppearanceSettings>,
     save_failed: bool,
+    monitor_list_open: bool,
 }
 
 impl DisplayPage {
@@ -14,13 +16,14 @@ impl DisplayPage {
         Self {
             appearance,
             save_failed: false,
+            monitor_list_open: false,
         }
     }
 
     fn step_button(
         label: &'static str,
-        amount: i32,
         enabled: bool,
+        change: impl Fn(&mut AppearanceSettings) + 'static,
         cx: &Context<Self>,
     ) -> Stateful<Div> {
         div()
@@ -39,44 +42,202 @@ impl DisplayPage {
                     .cursor_pointer()
                     .hover(|style| style.bg(rgb(0x405675)))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        let limit = gap_limit(cx);
-                        this.save_failed = update_settings(
-                            &this.appearance,
-                            |settings| {
-                                let gap = settings.top_gap.min(limit);
-                                settings.top_gap = gap.saturating_add_signed(amount).min(limit);
-                            },
-                            cx,
-                        )
-                        .is_err();
-                        cx.notify();
+                        this.update_settings(|settings| change(settings), cx);
                     }))
             })
+    }
+
+    fn stepper(
+        id: &'static str,
+        value: u32,
+        min: u32,
+        max: u32,
+        change: impl Fn(&mut AppearanceSettings, bool) + Copy + 'static,
+        cx: &Context<Self>,
+    ) -> Stateful<Div> {
+        div()
+            .id(id)
+            .flex()
+            .items_center()
+            .child(Self::step_button(
+                "−",
+                value > min,
+                move |settings| change(settings, false),
+                cx,
+            ))
+            .child(div().w(px(70.0)).text_center().child(format!("{value} px")))
+            .child(Self::step_button(
+                "+",
+                value < max,
+                move |settings| change(settings, true),
+                cx,
+            ))
+    }
+
+    fn monitor_picker(
+        &self,
+        monitor: Option<&Monitor>,
+        follow_primary: bool,
+        cx: &Context<Self>,
+    ) -> Div {
+        let label = match monitor {
+            Some(_) if follow_primary => "Follow Windows primary".into(),
+            Some(monitor) => monitor.label(),
+            None => "No display available".into(),
+        };
+        setting_row(
+            "Monitor",
+            div()
+                .id("monitor-picker")
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .px(px(9.0))
+                .py(px(5.0))
+                .rounded_md()
+                .bg(rgb(0x34445d))
+                .child(label)
+                .when(monitor.is_some(), |button| {
+                    button
+                        .cursor_pointer()
+                        .hover(|style| style.bg(rgb(0x405675)))
+                        .child(if self.monitor_list_open { "▴" } else { "▾" })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.monitor_list_open = !this.monitor_list_open;
+                            cx.notify();
+                        }))
+                }),
+        )
+    }
+
+    fn monitor_option(
+        label: impl Into<SharedString>,
+        device: Option<&str>,
+        selected: bool,
+        cx: &Context<Self>,
+    ) -> Stateful<Div> {
+        let id = SharedString::from(device.unwrap_or("primary").to_owned());
+        let device = device.map(str::to_owned);
+        div()
+            .id(id)
+            .px(px(10.0))
+            .py(px(6.0))
+            .rounded_md()
+            .cursor_pointer()
+            .when(selected, |item| {
+                item.bg(rgb(0x29364e)).text_color(rgb(0xcbdcff))
+            })
+            .when(!selected, |item| {
+                item.hover(|style| style.bg(rgb(0x34445d)))
+            })
+            .child(label.into())
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.monitor_list_open = false;
+                this.update_settings(|settings| settings.monitor = device.clone(), cx);
+            }))
+    }
+
+    fn update_settings(
+        &mut self,
+        change: impl FnOnce(&mut AppearanceSettings),
+        cx: &mut Context<Self>,
+    ) {
+        self.save_failed = update_settings(&self.appearance, change, cx).is_err();
+        cx.notify();
     }
 }
 
 impl Render for DisplayPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let limit = gap_limit(cx);
-        let gap = self.appearance.read(cx).top_gap.min(limit);
-        let step = TOP_GAP_STEP as i32;
-        let controls = div()
-            .flex()
-            .items_center()
-            .child(Self::step_button("−", -step, gap > 0, cx))
-            .child(div().w(px(70.0)).text_center().child(format!("{gap} px")))
-            .child(Self::step_button("+", step, gap < limit, cx));
+        let settings = self.appearance.read(cx);
+        let follow_primary = settings.monitor.is_none();
+        let monitors = monitors();
+        let monitor = selected_monitor(&monitors, settings.monitor.as_deref());
+        let limit = monitor.map_or(0, |monitor| max_top_gap(monitor.bounds.size.height));
+        let offset_limit = limit.max(1);
+        let gap = Self::stepper(
+            "top-gap",
+            settings.top_gap.min(limit),
+            0,
+            limit,
+            move |settings, increase| {
+                settings.top_gap = stepped(
+                    settings.top_gap,
+                    settings.offset.clamp(1, offset_limit),
+                    increase,
+                    0,
+                    limit,
+                );
+            },
+            cx,
+        );
+        let offset = Self::stepper(
+            "offset",
+            settings.offset.clamp(1, offset_limit),
+            1,
+            offset_limit,
+            move |settings, increase| {
+                settings.offset = stepped(settings.offset, 1, increase, 1, offset_limit);
+            },
+            cx,
+        );
 
         div()
             .flex()
             .flex_col()
             .gap(px(8.0))
-            .child(setting_row("Top gap", controls))
+            .child(setting_row("Top gap", gap))
+            .child(setting_row("Offset", offset))
+            .child(self.monitor_picker(monitor, follow_primary, cx))
+            .when(self.monitor_list_open && !monitors.is_empty(), |page| {
+                page.child(
+                    div()
+                        .id("monitor-options")
+                        .max_h(px(165.0))
+                        .overflow_y_scroll()
+                        .p(px(5.0))
+                        .rounded_md()
+                        .bg(rgb(0x232c3b))
+                        .child(Self::monitor_option(
+                            "Follow Windows primary",
+                            None,
+                            follow_primary,
+                            cx,
+                        ))
+                        .children(monitors.iter().map(|item| {
+                            Self::monitor_option(
+                                item.label(),
+                                Some(item.identity()),
+                                !follow_primary && monitor == Some(item),
+                                cx,
+                            )
+                        })),
+                )
+            })
             .when(self.save_failed, |page| page.child(save_error()))
     }
 }
 
-fn gap_limit(cx: &App) -> u32 {
-    cx.primary_display()
-        .map_or(0, |display| max_top_gap(display.bounds().size.height))
+fn stepped(value: u32, amount: u32, increase: bool, min: u32, max: u32) -> u32 {
+    let value = value.clamp(min, max);
+    let next = if increase {
+        value.saturating_add(amount)
+    } else {
+        value.saturating_sub(amount)
+    };
+    next.clamp(min, max)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stepped;
+
+    #[test]
+    fn configurable_offset_steps_and_clamps_the_gap() {
+        assert_eq!(stepped(20, 7, true, 0, 100), 27);
+        assert_eq!(stepped(20, 7, false, 0, 100), 13);
+        assert_eq!(stepped(4, 7, false, 0, 100), 0);
+        assert_eq!(stepped(97, 7, true, 0, 100), 100);
+        assert_eq!(stepped(0, 1, false, 1, 100), 1);
+    }
 }

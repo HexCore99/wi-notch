@@ -1,13 +1,11 @@
 use gpui::{Bounds, Pixels, Point, point, px};
 
 pub const EXPANDED_SIZE: (f32, f32) = (340.0, 162.0);
-pub const TOP_GAP_STEP: u32 = 5;
 
 pub fn max_top_gap(screen_height: Pixels) -> u32 {
     // Leave room for the size animation to overshoot the expanded height.
     let clearance = EXPANDED_SIZE.1 + 10.0;
-    let available = (f32::from(screen_height) - clearance).max(0.0) as u32;
-    available / TOP_GAP_STEP * TOP_GAP_STEP
+    (f32::from(screen_height) - clearance).max(0.0) as u32
 }
 
 pub fn notch_origin(screen: Bounds<Pixels>, width: Pixels, top_gap: u32) -> Point<Pixels> {
@@ -39,9 +37,9 @@ mod tests {
     #[test]
     fn top_gap_fits_the_expanded_notch_and_allows_zero() {
         let screen = Bounds::new(point(px(0.0), px(0.0)), size(px(700.0), px(350.0)));
-        assert_eq!(max_top_gap(screen.size.height), 175);
+        assert_eq!(max_top_gap(screen.size.height), 178);
         assert_eq!(max_top_gap(px(150.0)), 0);
-        assert_eq!(notch_origin(screen, px(150.0), u32::MAX).y, px(175.0));
+        assert_eq!(notch_origin(screen, px(150.0), u32::MAX).y, px(178.0));
         assert_eq!(notch_origin(screen, px(150.0), 0).y, px(0.0));
     }
 }

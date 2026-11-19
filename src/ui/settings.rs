@@ -184,15 +184,14 @@ fn update_settings(
     change: impl FnOnce(&mut AppearanceSettings),
     cx: &mut App,
 ) -> std::io::Result<()> {
-    let settings = appearance.update(cx, |settings, cx| {
-        let previous = *settings;
+    appearance.update(cx, |settings, cx| {
+        let previous = settings.clone();
         change(settings);
         if *settings != previous {
             cx.notify();
         }
-        *settings
-    });
-    settings.save()
+        settings.save()
+    })
 }
 
 fn setting_row(label: &'static str, control: impl IntoElement) -> Div {

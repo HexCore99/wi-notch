@@ -1,9 +1,12 @@
+use std::time::Duration;
+
 use super::animation::SizeAnimation;
 use super::music_player::MusicPlayer;
 use super::settings::SettingsView;
 use crate::appearance::{AppearanceSettings, Corners};
 use crate::notch_geometry::EXPANDED_SIZE;
 use crate::ui::clock::Clock;
+use crate::windows::display::{monitors, selected_monitor};
 use chrono::Local;
 use gpui::{prelude::*, *};
 
@@ -14,7 +17,7 @@ pub struct Notch {
     compact_size: (f32, f32),
     expanded: bool,
     animation: Option<SizeAnimation>,
-    last_top_gap: Option<u32>,
+    _placement_watch: Task<()>,
 
     clock: Entity<Clock>,
     music_player: Entity<MusicPlayer>,
@@ -27,21 +30,53 @@ impl Notch {
         width: f32,
         height: f32,
         appearance: Entity<AppearanceSettings>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Self {
         cx.observe(&appearance, |_, _, cx| cx.notify()).detach();
+        // A primary-display change can leave the notch off screen without a render.
+        let placement_watch = cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(500))
+                    .await;
+                if this
+                    .update_in(cx, |notch, window, cx| notch.sync_placement(window, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
         Self {
             width,
             height,
             compact_size: (width, height),
             expanded: false,
             animation: None,
-            last_top_gap: None,
+            _placement_watch: placement_watch,
 
             clock: cx.new(Clock::new),
             music_player: cx.new(|_| MusicPlayer::default()),
             appearance,
             settings_window: None,
+        }
+    }
+
+    fn sync_placement(&self, window: &Window, cx: &App) {
+        let settings = self.appearance.read(cx);
+        let monitors = monitors();
+        if let Some(monitor) = selected_monitor(&monitors, settings.monitor.as_deref())
+            && let Err(error) = crate::windows::window::place_notch(
+                window,
+                cx,
+                self.width,
+                self.height,
+                settings.top_gap,
+                monitor,
+            )
+        {
+            eprintln!("Failed to position the notch: {error}");
         }
     }
 
@@ -66,9 +101,9 @@ impl Notch {
 
 impl Render for Notch {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let appearance = *self.appearance.read(cx);
-        let needs_layout =
-            self.animation.is_some() || self.last_top_gap != Some(appearance.top_gap);
+        let settings = self.appearance.read(cx);
+        let background = settings.background.color();
+        let rounded = settings.corners == Corners::Rounded;
         if let Some(animation) = &self.animation {
             let (width, height, finished) = animation.sample();
             self.width = width;
@@ -81,18 +116,7 @@ impl Render for Notch {
             }
         }
 
-        if needs_layout {
-            self.last_top_gap = Some(appearance.top_gap);
-            if let Err(error) = crate::windows::window::resize_notch(
-                window,
-                cx,
-                self.width,
-                self.height,
-                appearance.top_gap,
-            ) {
-                eprintln!("Failed to position the notch: {error}");
-            }
-        }
+        self.sync_placement(window, cx);
 
         let expansion = ((self.height - self.compact_size.1)
             / (EXPANDED_SIZE.1 - self.compact_size.1))
@@ -110,10 +134,8 @@ impl Render for Notch {
             .flex_col()
             .items_center()
             .overflow_hidden()
-            .bg(rgb(appearance.background.color()))
-            .when(appearance.corners == Corners::Rounded, |notch| {
-                notch.rounded_xl()
-            })
+            .bg(rgb(background))
+            .when(rounded, |notch| notch.rounded_xl())
             .text_color(rgb(0xffffff))
             .font_weight(FontWeight(600.0))
             .child(

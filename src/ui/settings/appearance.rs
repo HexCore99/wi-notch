@@ -46,7 +46,7 @@ impl AppearancePage {
 
 impl Render for AppearancePage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let appearance = *self.appearance.read(cx);
+        let appearance = self.appearance.read(cx);
         let rounded = appearance.corners == Corners::Rounded;
         let background = div()
             .flex()
