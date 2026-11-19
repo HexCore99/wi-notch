@@ -1,10 +1,13 @@
+mod appearance;
+
+use appearance::AppearancePage;
 use gpui::{prelude::*, *};
 
-use crate::appearance::{AppearanceSettings, Background, Corners};
+use crate::appearance::AppearanceSettings;
+use crate::windows::window::remove_window_border;
 
 pub struct SettingsView {
-    appearance: Entity<AppearanceSettings>,
-    save_failed: bool,
+    appearance_page: Entity<AppearancePage>,
 }
 
 impl SettingsView {
@@ -14,132 +17,125 @@ impl SettingsView {
     ) -> Result<WindowHandle<Self>> {
         cx.open_window(
             WindowOptions {
-                window_bounds: Some(WindowBounds::centered(size(px(360.0), px(220.0)), cx)),
+                window_bounds: Some(WindowBounds::centered(size(px(652.0), px(556.0)), cx)),
                 titlebar: Some(TitlebarOptions {
                     title: Some("wi-notch Settings".into()),
+                    appears_transparent: true,
                     ..Default::default()
                 }),
                 is_resizable: false,
+                window_background: WindowBackgroundAppearance::Transparent,
                 ..Default::default()
             },
-            |_, cx| {
-                cx.new(|_| Self {
-                    appearance,
-                    save_failed: false,
+            |window, cx| {
+                if let Err(error) = remove_window_border(window) {
+                    eprintln!("Failed to remove the Settings window border: {error}");
+                }
+                cx.new(|cx| Self {
+                    appearance_page: cx.new(|_| AppearancePage::new(appearance)),
                 })
             },
         )
     }
-
-    fn choice(
-        label: &'static str,
-        selected: bool,
-        change: impl Fn(&mut AppearanceSettings) + 'static,
-        cx: &Context<Self>,
-    ) -> Stateful<Div> {
-        div()
-            .id(label)
-            .px(px(10.0))
-            .py(px(6.0))
-            .rounded_md()
-            .text_size(px(13.0))
-            .bg(rgb(if selected { 0xf0f0f0 } else { 0x303030 }))
-            .text_color(rgb(if selected { 0x171717 } else { 0xf0f0f0 }))
-            .cursor_pointer()
-            .when(!selected, |button| {
-                button.hover(|style| style.bg(rgb(0x3d3d3d)))
-            })
-            .child(label)
-            .on_click(cx.listener(move |this, _, _, cx| {
-                let settings = this.appearance.update(cx, |settings, cx| {
-                    let previous = *settings;
-                    change(settings);
-                    if *settings != previous {
-                        cx.notify();
-                    }
-                    *settings
-                });
-                this.save_failed = settings.save().is_err();
-                cx.notify();
-            }))
-    }
 }
 
 impl Render for SettingsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let appearance = *self.appearance.read(cx);
-        let background_choices = div()
-            .flex()
-            .gap(px(6.0))
-            .child(Self::choice(
-                "Black",
-                appearance.background == Background::Black,
-                |settings| {
-                    settings.background = Background::Black;
-                },
-                cx,
-            ))
-            .child(Self::choice(
-                "Charcoal",
-                appearance.background == Background::Charcoal,
-                |settings| {
-                    settings.background = Background::Charcoal;
-                },
-                cx,
-            ));
-        let corner_choices = div()
-            .flex()
-            .gap(px(6.0))
-            .child(Self::choice(
-                "Rounded",
-                appearance.corners == Corners::Rounded,
-                |settings| {
-                    settings.corners = Corners::Rounded;
-                },
-                cx,
-            ))
-            .child(Self::choice(
-                "Square",
-                appearance.corners == Corners::Square,
-                |settings| {
-                    settings.corners = Corners::Square;
-                },
-                cx,
-            ));
-
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
             .flex()
-            .flex_col()
-            .p(px(18.0))
-            .gap(px(15.0))
-            .bg(rgb(0x171717))
-            .text_color(rgb(0xf0f0f0))
-            .text_size(px(14.0))
+            .rounded_xl()
+            .overflow_hidden()
+            .bg(rgb(0x1b2230))
+            .text_color(rgb(0xe9eef6))
+            .text_size(px(13.0))
             .child(
                 div()
-                    .text_size(px(19.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Appearance"),
+                    .w(px(192.0))
+                    .flex_none()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .px(px(10.0))
+                    .rounded_l_xl()
+                    .bg(rgb(0x121824))
+                    .child(
+                        div()
+                            .h(px(61.0))
+                            .flex()
+                            .items_center()
+                            .px(px(12.0))
+                            .window_control_area(WindowControlArea::Drag)
+                            .text_size(px(16.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Settings"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .px(px(10.0))
+                            .py(px(8.0))
+                            .rounded_md()
+                            .bg(rgb(0x29364e))
+                            .text_color(rgb(0xcbdcff))
+                            .child(
+                                div()
+                                    .size(px(20.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_md()
+                                    .bg(rgb(0x344766))
+                                    .font_family("Segoe UI Symbol")
+                                    .child("◐"),
+                            )
+                            .child("Appearance"),
+                    ),
             )
-            .child(setting_row("Background", background_choices))
-            .child(setting_row("Corners", corner_choices))
-            .when(self.save_failed, |view| {
-                view.child(
-                    div()
-                        .text_size(px(12.0))
-                        .text_color(rgb(0xffa59c))
-                        .child("Couldn’t save settings. Changes apply for this session."),
-                )
-            })
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.0))
+                    .px(px(22.0))
+                    .child(
+                        div()
+                            .h(px(60.0))
+                            .flex()
+                            .items_center()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .h_full()
+                                    .flex()
+                                    .items_center()
+                                    .window_control_area(WindowControlArea::Drag)
+                                    .text_size(px(22.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Appearance"),
+                            )
+                            .child(
+                                div()
+                                    .id("close-settings")
+                                    .size(px(32.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_md()
+                                    .text_color(rgb(0xb9c5d7))
+                                    .text_size(px(22.0))
+                                    .cursor_pointer()
+                                    .hover(|style| {
+                                        style.bg(rgb(0x70343d)).text_color(rgb(0xffffff))
+                                    })
+                                    .child("×")
+                                    .on_click(|_, window, _| window.remove_window()),
+                            ),
+                    )
+                    .child(self.appearance_page.clone()),
+            )
     }
-}
-
-fn setting_row(label: &'static str, choices: Div) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .justify_between()
-        .child(label)
-        .child(choices)
 }

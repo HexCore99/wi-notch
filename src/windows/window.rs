@@ -39,18 +39,21 @@ unsafe extern "system" fn notch_window_proc(
     unsafe { DefSubclassProc(hwnd, message, wparam, laparam) }
 }
 
+fn window_hwnd(window: &gpui::Window) -> Result<HWND, Box<dyn std::error::Error>> {
+    let handle = HasWindowHandle::window_handle(window)?;
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return Err("Expected a Windows window".into());
+    };
+    Ok(HWND(handle.hwnd.get() as *mut std::ffi::c_void))
+}
+
 pub fn resize_notch(
     window: &gpui::Window,
     cx: &gpui::App,
     width: f32,
     height: f32,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let handle = HasWindowHandle::window_handle(window)?;
-
-    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
-        return Err("Expected a Windows window".into());
-    };
-    let hwnd = HWND(handle.hwnd.get() as *mut std::ffi::c_void);
+    let hwnd = window_hwnd(window)?;
 
     let mut outer = RECT::default();
     let mut inner = RECT::default();
@@ -102,20 +105,8 @@ pub fn resize_notch(
     Ok(())
 }
 
-// remove border + make window topmost
-pub fn configure_window(window: &gpui::Window) -> Result<(), Box<dyn std::error::Error>> {
-    let handle = HasWindowHandle::window_handle(window)?;
-
-    /*
-     * RawWindowHandle is an enum, represent Window,mac,linux handles.
-     * handle.as_raw() returns a reference to the underlying handle.
-     * Win32(handle) checks if the handle is a Windows handle extracts it.
-     */
-    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
-        return Err("Expected a Windows window".into());
-    };
-
-    let hwnd = HWND(handle.hwnd.get() as *mut std::ffi::c_void);
+pub fn remove_window_border(window: &gpui::Window) -> Result<(), Box<dyn std::error::Error>> {
+    let hwnd = window_hwnd(window)?;
     let color = COLORREF(DWMWA_COLOR_NONE); // Set to DWMWA_COLOR_NONE to remove the border color
 
     let policy = DWMNCRP_DISABLED; // Disable non-client area rendering
@@ -145,7 +136,15 @@ pub fn configure_window(window: &gpui::Window) -> Result<(), Box<dyn std::error:
             std::ptr::from_ref(&corners).cast(),
             std::mem::size_of_val(&corners) as u32,
         )?;
+    }
+    Ok(())
+}
 
+pub fn configure_window(window: &gpui::Window) -> Result<(), Box<dyn std::error::Error>> {
+    remove_window_border(window)?;
+    let hwnd = window_hwnd(window)?;
+
+    unsafe {
         if !SetWindowSubclass(hwnd, Some(notch_window_proc), 1, 0).as_bool() {
             return Err("Failed to install notch window handler".into());
         }
