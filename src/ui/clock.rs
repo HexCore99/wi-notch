@@ -43,7 +43,7 @@ impl Render for Clock {
         div()
             .id("clock")
             .text_color(gpui::rgb(0xffffff))
-            .text_size(gpui::px(24.0))
+            .text_size(gpui::px(15.0))
             .child(Local::now().format("%I:%M:%p").to_string())
     }
 }

@@ -1,5 +1,6 @@
 use super::animation::SizeAnimation;
 use crate::ui::clock::Clock;
+use chrono::Local;
 use gpui::{prelude::*, *};
 
 pub struct Notch {
@@ -43,25 +44,39 @@ impl Render for Notch {
                 window.request_animation_frame();
             }
         }
+
+        let expansion =
+            ((self.height - self.compact_size.1) / (162.0 - self.compact_size.1)).clamp(0.0, 1.0);
+
+        let date_opacity = ((expansion - 0.25) / 0.55).clamp(0.0, 1.0);
+
         div()
             .id("notch")
             .w(px(self.width))
             .h(px(self.height))
             .flex()
-            .items_center()
+            // .items_center()
             .justify_center()
             .bg(rgb(0x000000))
             .rounded_xl()
             .text_color(rgb(0xffffff))
-            //        Local::now().format("%I:%M:%p").to_string()
             .child(self.clock.clone())
+            .child(
+                div()
+                    .ml(px(12.0 * date_opacity))
+                    .w(px(100.0 * date_opacity))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .opacity(date_opacity)
+                    .child(Local::now().date_naive().to_string()),
+            )
             .on_hover(cx.listener(|this, hovered, _window, cx| {
                 if this.expanded == *hovered {
                     return;
                 }
                 this.expanded = *hovered;
                 let target_size = if *hovered {
-                    (540.0, 162.0)
+                    (340.0, 162.0)
                 } else {
                     this.compact_size
                 };
