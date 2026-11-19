@@ -1,25 +1,45 @@
+mod appearance;
+mod notch_geometry;
 mod ui;
 mod windows;
 
+use appearance::AppearanceSettings;
 use gpui::{prelude::*, *};
+use notch_geometry::notch_origin;
 use ui::notch::Notch;
+use windows::display::{monitors, selected_monitor};
 
 fn main() {
     Application::new().run(|cx: &mut App| {
         let width = 150.0;
         let height = 35.0;
 
-        let display = cx.primary_display().expect("Failed to get primary display");
-        let screen = display.bounds();
-
-        let x = screen.origin.x + (screen.size.width - px(width)) / 2.0;
-        let y = screen.origin.y + px(100.0);
-
-        let bounds = Bounds::new(point(x, y), size(px(width), px(height)));
+        let mut settings = AppearanceSettings::load();
+        let monitors = monitors();
+        let monitor = selected_monitor(&monitors, settings.monitor.as_deref())
+            .expect("Failed to get a display");
+        if settings.monitor.as_deref() == Some(monitor.device.as_str())
+            && monitor.identity() != monitor.device
+        {
+            settings.monitor = Some(monitor.identity().to_owned());
+            if let Err(error) = settings.save() {
+                eprintln!("Failed to save the monitor selection: {error}");
+            }
+        }
+        // GPUI's Windows display IDs use the same monitor enumeration order.
+        let display_id = cx
+            .displays()
+            .into_iter()
+            .find(|display| u32::from(display.id()) == monitor.index)
+            .map(|display| display.id());
+        let origin = notch_origin(monitor.bounds, px(width), settings.top_gap);
+        let bounds = Bounds::new(origin, size(px(width), px(height)));
+        let appearance = cx.new(|_| settings);
 
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                display_id,
                 titlebar: None,
                 kind: WindowKind::PopUp,
                 is_resizable: false,
@@ -30,7 +50,7 @@ fn main() {
             |window, cx| {
                 windows::window::configure_window(window)
                     .expect("Failed to remove the window border");
-                cx.new(|cx| Notch::new(width, height, cx))
+                cx.new(|cx| Notch::new(width, height, appearance, window, cx))
             },
         )
         .expect("Failed to open the notch window");

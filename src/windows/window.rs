@@ -1,7 +1,10 @@
-use ::windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+use ::windows::Win32::Foundation::{LPARAM, LRESULT, POINT, WPARAM};
+use ::windows::Win32::Graphics::Gdi::ClientToScreen;
+use ::windows::Win32::UI::HiDpi::GetDpiForWindow;
 use ::windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, GetWindowRect, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_NOZORDER, SetWindowPos,
+    GetClientRect, GetWindowRect, HWND_TOPMOST, IsIconic, IsWindowVisible, SW_SHOWNOACTIVATE,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SetWindowPos, ShowWindow,
+    USER_DEFAULT_SCREEN_DPI,
 };
 use ::windows::Win32::{
     Foundation::{COLORREF, HWND, RECT},
@@ -15,6 +18,9 @@ use ::windows::Win32::{
     },
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+use super::display::Monitor;
+use crate::notch_geometry::notch_origin;
 
 unsafe extern "system" fn notch_window_proc(
     hwnd: HWND,
@@ -39,25 +45,40 @@ unsafe extern "system" fn notch_window_proc(
     unsafe { DefSubclassProc(hwnd, message, wparam, laparam) }
 }
 
-pub fn resize_notch(
+fn window_hwnd(window: &gpui::Window) -> Result<HWND, Box<dyn std::error::Error>> {
+    let handle = HasWindowHandle::window_handle(window)?;
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return Err("Expected a Windows window".into());
+    };
+    Ok(HWND(handle.hwnd.get() as *mut std::ffi::c_void))
+}
+
+pub fn place_notch(
     window: &gpui::Window,
     cx: &gpui::App,
     width: f32,
     height: f32,
+    top_gap: u32,
+    monitor: &Monitor,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let handle = HasWindowHandle::window_handle(window)?;
-
-    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
-        return Err("Expected a Windows window".into());
-    };
-    let hwnd = HWND(handle.hwnd.get() as *mut std::ffi::c_void);
+    let hwnd = window_hwnd(window)?;
+    if unsafe { IsIconic(hwnd) }.as_bool() {
+        cx.foreground_executor()
+            .spawn(async move {
+                let _ = unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
+            })
+            .detach();
+        return Ok(());
+    }
 
     let mut outer = RECT::default();
     let mut inner = RECT::default();
+    let mut client_origin = POINT::default();
 
     unsafe {
         GetWindowRect(hwnd, &mut outer)?;
         GetClientRect(hwnd, &mut inner)?;
+        ClientToScreen(hwnd, &mut client_origin).ok()?;
     }
 
     let outer_width = outer.right - outer.left;
@@ -65,20 +86,36 @@ pub fn resize_notch(
     let inner_width = inner.right - inner.left;
     let inner_height = inner.bottom - inner.top;
 
-    let frame_width = outer_width - inner_width;
-    let frame_height = outer_height - inner_height;
-
-    let scale = window.scale_factor(); // Get the scale factor of the window
+    let scale = monitor.scale;
+    let dpi = unsafe { GetDpiForWindow(hwnd) };
+    let window_scale = if dpi == 0 {
+        window.scale_factor()
+    } else {
+        dpi as f32 / USER_DEFAULT_SCREEN_DPI as f32
+    };
+    let scale_ratio = scale / window_scale;
+    let frame_width = ((outer_width - inner_width) as f32 * scale_ratio).round() as i32;
+    let frame_height = ((outer_height - inner_height) as f32 * scale_ratio).round() as i32;
 
     let new_width = (width * scale).round() as i32 + frame_width;
     let new_height = (height * scale).round() as i32 + frame_height;
 
-    let display = cx.primary_display().ok_or("No primary display found")?;
-    let screen = display.bounds();
-    let center_x = f32::from(screen.origin.x + screen.size.width / 2.0) * scale;
+    let origin = notch_origin(monitor.bounds, gpui::px(width), top_gap);
+    // SetWindowPos moves the outer window. Offset it to place the visible client area.
+    let inset_x = ((client_origin.x - outer.left) as f32 * scale_ratio).round() as i32;
+    let inset_y = ((client_origin.y - outer.top) as f32 * scale_ratio).round() as i32;
+    let x = (f32::from(origin.x) * scale).round() as i32 - inset_x;
+    let y = (f32::from(origin.y) * scale).round() as i32 - inset_y;
 
-    let x = (center_x - new_width as f32 / 2.0).round() as i32;
-    let y = outer.top;
+    // Windows can move or hide the HWND even when the saved position hasn't changed.
+    if outer.left == x
+        && outer.top == y
+        && outer_width == new_width
+        && outer_height == new_height
+        && unsafe { IsWindowVisible(hwnd) }.as_bool()
+    {
+        return Ok(());
+    }
 
     // Run after current gpui update has finished
     cx.foreground_executor()
@@ -91,31 +128,19 @@ pub fn resize_notch(
                     y,
                     new_width,
                     new_height,
-                    SWP_NOACTIVATE | SWP_NOZORDER,
+                    SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW,
                 )
             };
             if let Err(error) = result {
-                eprintln!("Failed to resize the notch: {error}");
+                eprintln!("Failed to position the notch: {error}");
             }
         })
         .detach();
     Ok(())
 }
 
-// remove border + make window topmost
-pub fn configure_window(window: &gpui::Window) -> Result<(), Box<dyn std::error::Error>> {
-    let handle = HasWindowHandle::window_handle(window)?;
-
-    /*
-     * RawWindowHandle is an enum, represent Window,mac,linux handles.
-     * handle.as_raw() returns a reference to the underlying handle.
-     * Win32(handle) checks if the handle is a Windows handle extracts it.
-     */
-    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
-        return Err("Expected a Windows window".into());
-    };
-
-    let hwnd = HWND(handle.hwnd.get() as *mut std::ffi::c_void);
+pub fn remove_window_border(window: &gpui::Window) -> Result<(), Box<dyn std::error::Error>> {
+    let hwnd = window_hwnd(window)?;
     let color = COLORREF(DWMWA_COLOR_NONE); // Set to DWMWA_COLOR_NONE to remove the border color
 
     let policy = DWMNCRP_DISABLED; // Disable non-client area rendering
@@ -145,7 +170,15 @@ pub fn configure_window(window: &gpui::Window) -> Result<(), Box<dyn std::error:
             std::ptr::from_ref(&corners).cast(),
             std::mem::size_of_val(&corners) as u32,
         )?;
+    }
+    Ok(())
+}
 
+pub fn configure_window(window: &gpui::Window) -> Result<(), Box<dyn std::error::Error>> {
+    remove_window_border(window)?;
+    let hwnd = window_hwnd(window)?;
+
+    unsafe {
         if !SetWindowSubclass(hwnd, Some(notch_window_proc), 1, 0).as_bool() {
             return Err("Failed to install notch window handler".into());
         }
