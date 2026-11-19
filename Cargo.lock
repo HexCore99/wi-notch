@@ -6203,6 +6203,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "gpui",
+ "image",
  "raw-window-handle",
  "serde",
  "serde_json",

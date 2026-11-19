@@ -3,8 +3,10 @@ use ::windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionManager as WindowsSessionManager,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus,
 };
-use ::windows::Storage::Streams::{DataReader, IRandomAccessStreamReference};
+use ::windows::Storage::Streams::IRandomAccessStreamReference;
 use chrono::Utc;
+
+use super::streams::read_image_stream;
 
 pub struct SessionManager(WindowsSessionManager);
 
@@ -85,25 +87,8 @@ impl NowPlaying {
     }
 
     pub async fn read_artwork(&self) -> Option<(String, Vec<u8>)> {
-        const MAX_ARTWORK_BYTES: u32 = 8 * 1024 * 1024;
-
         let stream = self.thumbnail.as_ref()?.OpenReadAsync().ok()?.await.ok()?;
-        let size = u32::try_from(stream.Size().ok()?).ok()?;
-        if size == 0 || size > MAX_ARTWORK_BYTES {
-            return None;
-        }
-
-        let input = stream.GetInputStreamAt(0).ok()?;
-        let reader = DataReader::CreateDataReader(&input).ok()?;
-        let loaded = reader.LoadAsync(size).ok()?.await.ok()?;
-        if loaded != size {
-            return None;
-        }
-
-        let mut bytes = vec![0; loaded as usize];
-        reader.ReadBytes(&mut bytes).ok()?;
-        let content_type = stream.ContentType().unwrap_or_default().to_string();
-        Some((content_type, bytes))
+        read_image_stream(stream, 8 * 1024 * 1024).await
     }
 
     pub async fn send_action(&self, action: MediaAction) -> ::windows::core::Result<bool> {

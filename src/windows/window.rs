@@ -20,7 +20,7 @@ use ::windows::Win32::{
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use super::display::Monitor;
-use crate::notch_geometry::notch_origin;
+use crate::notch_geometry::notch_origin_for_height;
 
 unsafe extern "system" fn notch_window_proc(
     hwnd: HWND,
@@ -100,7 +100,8 @@ pub fn place_notch(
     let new_width = (width * scale).round() as i32 + frame_width;
     let new_height = (height * scale).round() as i32 + frame_height;
 
-    let origin = notch_origin(monitor.bounds, gpui::px(width), top_gap);
+    let origin =
+        notch_origin_for_height(monitor.bounds, gpui::px(width), gpui::px(height), top_gap);
     // SetWindowPos moves the outer window. Offset it to place the visible client area.
     let inset_x = ((client_origin.x - outer.left) as f32 * scale_ratio).round() as i32;
     let inset_y = ((client_origin.y - outer.top) as f32 * scale_ratio).round() as i32;
