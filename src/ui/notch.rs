@@ -8,7 +8,7 @@ use crate::appearance::{AppearanceSettings, Corners};
 use crate::notch_geometry::EXPANDED_SIZE;
 use crate::ui::clock::Clock;
 use crate::windows::display::{monitors, selected_monitor};
-use crate::windows::notifications::{Access, Listener, Snapshot, ToastKey, read_icon};
+use crate::windows::notifications::{Access, Listener, Snapshot, ToastKey, open_app, read_icon};
 use chrono::Local;
 use gpui::{prelude::*, *};
 
@@ -148,6 +148,26 @@ impl Notch {
             self.notifications.open();
             self.set_mode(Mode::Notifications, cx);
         }
+    }
+
+    fn open_notification_app(&mut self, key: ToastKey, cx: &mut Context<Self>) {
+        let Some(toast) = self.notifications.find(key) else {
+            return;
+        };
+        let app_id = toast.app_id.clone();
+        cx.spawn(async move |this, cx| {
+            let result = open_app(&app_id);
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(()) if this.mode == Mode::Notifications => this.set_mode(Mode::Compact, cx),
+                Ok(()) => {}
+                Err(error) => {
+                    eprintln!("Failed to open the notification's source app: {error}");
+                    this.notifications.launch_error = Some(key);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     fn request_notification_access(&mut self, cx: &mut Context<Self>) {
@@ -394,9 +414,13 @@ impl Render for Notch {
                 )
             })
             .when(self.mode == Mode::Notifications, |notch| {
+                let view = cx.weak_entity();
                 notch.child(self.notifications.panel(
                     self.height.min(target.1) - self.compact_size.1,
                     cx.listener(|this, _, _, cx| this.request_notification_access(cx)),
+                    move |key, cx| {
+                        let _ = view.update(cx, |this, cx| this.open_notification_app(key, cx));
+                    },
                 ))
             })
             .child(

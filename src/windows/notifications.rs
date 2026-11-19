@@ -11,8 +11,14 @@ use ::windows::{
         NotificationKinds, UserNotification,
     },
     Win32::{
-        Foundation::ERROR_INSUFFICIENT_BUFFER, Storage::Packaging::Appx::GetCurrentPackageFullName,
+        Foundation::{E_INVALIDARG, ERROR_INSUFFICIENT_BUFFER},
+        Storage::Packaging::Appx::GetCurrentPackageFullName,
+        UI::{
+            Shell::{SEE_MASK_FLAG_NO_UI, SHELLEXECUTEINFOW, ShellExecuteExW},
+            WindowsAndMessaging::SW_SHOWNORMAL,
+        },
     },
+    core::{Error, PCWSTR, w},
 };
 
 use super::streams::read_image_stream;
@@ -48,6 +54,26 @@ pub struct Snapshot {
 }
 
 pub struct Listener(UserNotificationListener);
+
+pub fn open_app(app_id: &str) -> ::windows::core::Result<()> {
+    if app_id.is_empty() || app_id.contains('\0') {
+        return Err(Error::new(E_INVALIDARG, "Invalid app ID"));
+    }
+
+    let target: Vec<u16> = format!("shell:AppsFolder\\{app_id}")
+        .encode_utf16()
+        .chain([0])
+        .collect();
+    let mut launch = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_FLAG_NO_UI,
+        lpVerb: w!("open"),
+        lpFile: PCWSTR(target.as_ptr()),
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+    unsafe { ShellExecuteExW(&mut launch) }
+}
 
 impl Listener {
     pub fn connect() -> Result<Self, Access> {

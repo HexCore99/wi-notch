@@ -23,6 +23,7 @@ pub struct Notifications {
     pub access: Access,
     pub requesting: bool,
     pub icons: HashMap<String, Option<Arc<RenderImage>>>,
+    pub launch_error: Option<ToastKey>,
     scroll: ScrollHandle,
     items: Vec<Toast>,
     unread: HashSet<ToastKey>,
@@ -35,6 +36,7 @@ impl Notifications {
             access,
             requesting: false,
             icons: HashMap::new(),
+            launch_error: None,
             scroll: ScrollHandle::new(),
             items: Vec::new(),
             unread: HashSet::new(),
@@ -54,6 +56,7 @@ impl Notifications {
         if access != Access::Allowed {
             self.items.clear();
             self.unread.clear();
+            self.launch_error = None;
             self.initialized = false;
             for image in self.icons.drain().filter_map(|(_, image)| image) {
                 drop_image(image);
@@ -85,6 +88,7 @@ impl Notifications {
 
     pub fn open(&mut self) {
         self.unread.clear();
+        self.launch_error = None;
         self.scroll.set_offset(point(px(0.0), px(0.0)));
     }
 
@@ -134,6 +138,7 @@ impl Notifications {
         &self,
         height: f32,
         enable: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+        open_app: impl Fn(ToastKey, &mut App) + Clone + 'static,
     ) -> Stateful<Div> {
         let panel = div()
             .id("notifications-scroll")
@@ -148,7 +153,11 @@ impl Notifications {
                 .flex_col()
                 .gap(px(ROW_GAP))
                 .py(px(LIST_PADDING))
-                .children(self.items.iter().map(|toast| self.row(toast)));
+                .children(
+                    self.items
+                        .iter()
+                        .map(|toast| self.row(toast, open_app.clone())),
+                );
         }
 
         let message = match self.access {
@@ -223,7 +232,7 @@ impl Notifications {
                         )
                     }),
             )
-            .child(message(toast))
+            .child(message(toast, false))
             .child(
                 div()
                     .flex_none()
@@ -233,8 +242,13 @@ impl Notifications {
             )
     }
 
-    fn row(&self, toast: &Toast) -> Div {
+    fn row(&self, toast: &Toast, open_app: impl Fn(ToastKey, &mut App) + 'static) -> Stateful<Div> {
+        let key = toast.key;
         div()
+            .id(SharedString::from(format!(
+                "notification-{}-{}",
+                key.id, key.created
+            )))
             .h(px(ROW_HEIGHT))
             .flex_none()
             .rounded_lg()
@@ -244,7 +258,12 @@ impl Notifications {
             .gap(px(10.0))
             .px(px(8.0))
             .child(self.icon_tile(toast, Some(app_accent(toast))))
-            .child(message(toast))
+            .child(message(toast, self.launch_error == Some(key)))
+            .when(!toast.app_id.is_empty(), |row| {
+                row.cursor_pointer()
+                    .hover(|style| style.bg(rgb(0x262626)))
+                    .on_click(move |_, _, cx| open_app(key, cx))
+            })
     }
 
     fn icon_tile(&self, toast: &Toast, accent: Option<u32>) -> Div {
@@ -351,8 +370,10 @@ fn trim_transparent_padding(pixels: &RgbaImage) -> Option<RgbaImage> {
     Some(crop_imm(pixels, left, top, right - left, bottom - top).to_image())
 }
 
-fn message(toast: &Toast) -> Div {
-    let subtitle = if toast.body.is_empty() {
+fn message(toast: &Toast, launch_failed: bool) -> Div {
+    let subtitle = if launch_failed {
+        "Windows couldn’t open this app."
+    } else if toast.body.is_empty() {
         &toast.app_name
     } else {
         &toast.body
@@ -375,7 +396,7 @@ fn message(toast: &Toast) -> Div {
                 .text_size(px(11.0))
                 .font_weight(FontWeight::NORMAL)
                 .text_color(rgb(0xb9b9b9))
-                .child(subtitle.clone()),
+                .child(subtitle.to_owned()),
         )
 }
 
