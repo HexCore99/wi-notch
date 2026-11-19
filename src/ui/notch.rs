@@ -8,7 +8,9 @@ use crate::appearance::{AppearanceSettings, Corners};
 use crate::notch_geometry::EXPANDED_SIZE;
 use crate::ui::clock::Clock;
 use crate::windows::display::{monitors, selected_monitor};
-use crate::windows::notifications::{Access, Listener, Snapshot, ToastKey, open_app, read_icon};
+use crate::windows::notifications::{
+    Access, Listener, Snapshot, ToastKey, open_notification, read_icon,
+};
 use chrono::Local;
 use gpui::{prelude::*, *};
 
@@ -32,6 +34,7 @@ pub struct Notch {
     _placement_watch: Task<()>,
     _notification_watch: Option<Task<()>>,
     preview_timeout: Option<Task<()>>,
+    opening_notification: bool,
 
     clock: Entity<Clock>,
     music_player: Entity<MusicPlayer>,
@@ -108,6 +111,7 @@ impl Notch {
             _placement_watch: placement_watch,
             _notification_watch: notification_watch,
             preview_timeout: None,
+            opening_notification: false,
 
             clock: cx.new(Clock::new),
             music_player: cx.new(|_| MusicPlayer::default()),
@@ -151,19 +155,26 @@ impl Notch {
     }
 
     fn open_notification_app(&mut self, key: ToastKey, cx: &mut Context<Self>) {
-        let Some(toast) = self.notifications.find(key) else {
+        if self.opening_notification {
+            return;
+        }
+        let Some(toast) = self.notifications.find(key).cloned() else {
             return;
         };
-        let app_id = toast.app_id.clone();
+        self.opening_notification = true;
         cx.spawn(async move |this, cx| {
-            let result = open_app(&app_id);
-            let _ = this.update(cx, |this, cx| match result {
-                Ok(()) if this.mode == Mode::Notifications => this.set_mode(Mode::Compact, cx),
-                Ok(()) => {}
-                Err(error) => {
-                    eprintln!("Failed to open the notification's source app: {error}");
-                    this.notifications.launch_error = Some(key);
-                    cx.notify();
+            let executor = cx.background_executor().clone();
+            let result = open_notification(toast, &executor).await;
+            let _ = this.update(cx, |this, cx| {
+                this.opening_notification = false;
+                match result {
+                    Ok(()) if this.mode == Mode::Notifications => this.set_mode(Mode::Compact, cx),
+                    Ok(()) => {}
+                    Err(error) => {
+                        eprintln!("Failed to open the notification's source app: {error}");
+                        this.notifications.launch_error = Some(key);
+                        cx.notify();
+                    }
                 }
             });
         })

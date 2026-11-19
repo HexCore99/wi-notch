@@ -11,17 +11,17 @@ use ::windows::{
         NotificationKinds, UserNotification,
     },
     Win32::{
-        Foundation::{E_INVALIDARG, ERROR_INSUFFICIENT_BUFFER},
+        Foundation::{E_INVALIDARG, ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER},
         Storage::Packaging::Appx::GetCurrentPackageFullName,
         UI::{
             Shell::{SEE_MASK_FLAG_NO_UI, SHELLEXECUTEINFOW, ShellExecuteExW},
             WindowsAndMessaging::SW_SHOWNORMAL,
         },
     },
-    core::{Error, PCWSTR, w},
+    core::{Error, HRESULT, PCWSTR, w},
 };
 
-use super::streams::read_image_stream;
+use super::{browser_toast, streams::read_image_stream, window::focus_app_window};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Access {
@@ -55,11 +55,53 @@ pub struct Snapshot {
 
 pub struct Listener(UserNotificationListener);
 
-pub fn open_app(app_id: &str) -> ::windows::core::Result<()> {
+pub async fn open_notification(
+    toast: Toast,
+    executor: &gpui::BackgroundExecutor,
+) -> ::windows::core::Result<()> {
+    let app_id = toast.app_id.clone();
     if app_id.is_empty() || app_id.contains('\0') {
         return Err(Error::new(E_INVALIDARG, "Invalid app ID"));
     }
 
+    let browser_id = browser_start_app_id(&app_id);
+    if let Some(start_id) = browser_id {
+        if Listener::connect().is_ok_and(|listener| listener.access() == Access::Allowed)
+            && executor
+                .spawn(async move { browser_toast::activate(&toast).is_some() })
+                .await
+        {
+            return Ok(());
+        }
+        if focus_app_window(start_id)? {
+            return Ok(());
+        }
+    }
+
+    match open_start_app(&app_id) {
+        Err(error) if error.code() == HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0) => {
+            if let Some(start_id) = browser_id {
+                open_start_app(start_id)
+            } else {
+                Err(error)
+            }
+        }
+        result => result,
+    }
+}
+
+fn browser_start_app_id(app_id: &str) -> Option<&str> {
+    // These desktop browsers use a separate toast ID built from their Start menu ID.
+    let install_hash = app_id
+        .strip_prefix("ZenToast-")
+        .or_else(|| app_id.strip_prefix("FirefoxToast-"))?;
+    (!install_hash.is_empty()
+        && install_hash.len() <= 16
+        && install_hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    .then_some(install_hash)
+}
+
+fn open_start_app(app_id: &str) -> ::windows::core::Result<()> {
     let target: Vec<u16> = format!("shell:AppsFolder\\{app_id}")
         .encode_utf16()
         .chain([0])
@@ -203,4 +245,30 @@ pub async fn read_icon(app: AppDisplayInfo) -> Option<Vec<u8>> {
     let stream = logo.OpenReadAsync().ok()?.await.ok()?;
     let (_, bytes) = read_image_stream(stream, 1024 * 1024).await?;
     Some(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::browser_start_app_id;
+
+    #[test]
+    fn only_recognized_browser_toast_ids_map_to_start_entries() {
+        assert_eq!(
+            browser_start_app_id("ZenToast-F0DC299D809B9700"),
+            Some("F0DC299D809B9700")
+        );
+        assert_eq!(
+            browser_start_app_id("FirefoxToast-308046B0AF4A39CB"),
+            Some("308046B0AF4A39CB")
+        );
+        for app_id in [
+            "Microsoft.WindowsNotepad_8wekyb3d8bbwe!App",
+            "OtherToast-F0DC299D809B9700",
+            "ZenToast-",
+            "ZenToast-not-a-hash",
+            "ZenToast-0123456789ABCDEF0",
+        ] {
+            assert_eq!(browser_start_app_id(app_id), None);
+        }
+    }
 }
