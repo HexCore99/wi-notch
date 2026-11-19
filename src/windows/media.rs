@@ -3,6 +3,7 @@ use ::windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionManager as WindowsSessionManager,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus,
 };
+use ::windows::Storage::Streams::{DataReader, IRandomAccessStreamReference};
 use chrono::Utc;
 
 pub struct SessionManager(WindowsSessionManager);
@@ -25,6 +26,10 @@ pub enum MediaAction {
 #[derive(Clone)]
 pub struct NowPlaying {
     session: Session,
+    source_app: String,
+    album: String,
+    track_number: i32,
+    thumbnail: Option<IRandomAccessStreamReference>,
     pub title: String,
     pub artist: String,
     pub playing: bool,
@@ -50,7 +55,14 @@ impl NowPlaying {
         let (elapsed, duration) = timeline(&session, playing, rate).unwrap_or_default();
 
         Some(Self {
+            source_app: session
+                .SourceAppUserModelId()
+                .unwrap_or_default()
+                .to_string(),
             session,
+            album: media.AlbumTitle().unwrap_or_default().to_string(),
+            track_number: media.TrackNumber().unwrap_or_default(),
+            thumbnail: media.Thumbnail().ok(),
             title: media.Title().unwrap_or_default().to_string(),
             artist: media.Artist().unwrap_or_default().to_string(),
             playing,
@@ -61,6 +73,37 @@ impl NowPlaying {
             elapsed,
             duration,
         })
+    }
+
+    pub fn has_same_artwork(&self, other: &Self) -> bool {
+        self.source_app == other.source_app
+            && self.title == other.title
+            && self.artist == other.artist
+            && self.album == other.album
+            && self.track_number == other.track_number
+            && self.thumbnail.is_some() == other.thumbnail.is_some()
+    }
+
+    pub async fn read_artwork(&self) -> Option<(String, Vec<u8>)> {
+        const MAX_ARTWORK_BYTES: u32 = 8 * 1024 * 1024;
+
+        let stream = self.thumbnail.as_ref()?.OpenReadAsync().ok()?.await.ok()?;
+        let size = u32::try_from(stream.Size().ok()?).ok()?;
+        if size == 0 || size > MAX_ARTWORK_BYTES {
+            return None;
+        }
+
+        let input = stream.GetInputStreamAt(0).ok()?;
+        let reader = DataReader::CreateDataReader(&input).ok()?;
+        let loaded = reader.LoadAsync(size).ok()?.await.ok()?;
+        if loaded != size {
+            return None;
+        }
+
+        let mut bytes = vec![0; loaded as usize];
+        reader.ReadBytes(&mut bytes).ok()?;
+        let content_type = stream.ContentType().unwrap_or_default().to_string();
+        Some((content_type, bytes))
     }
 
     pub async fn send_action(&self, action: MediaAction) -> ::windows::core::Result<bool> {
@@ -75,7 +118,9 @@ impl NowPlaying {
 }
 
 fn timeline(session: &Session, playing: bool, rate: f64) -> ::windows::core::Result<(u64, u64)> {
-    const TICKS_PER_SECOND: i64 = 10_000_000;
+    const TICKS_PER_SECOND: i64 = 10_000_000; //1 epoch  =100 nanosecond
+
+    // windows time start at 1601, chrono start at 1970. This line fixed that gap
     const WINDOWS_EPOCH_OFFSET_MS: i64 = 11_644_473_600_000;
 
     let timeline = session.GetTimelineProperties()?;

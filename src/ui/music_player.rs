@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{prelude::*, *};
@@ -8,6 +9,8 @@ use crate::windows::media::{MediaAction, NowPlaying, SessionManager};
 pub struct MusicPlayer {
     track: Option<NowPlaying>,
     refresh_task: Option<Task<()>>,
+    artwork: Option<Arc<RenderImage>>,
+    artwork_task: Option<Task<()>>,
 }
 
 impl MusicPlayer {
@@ -15,11 +18,11 @@ impl MusicPlayer {
         if !visible {
             // Dropping the task stops the refresh loop while the notch is closed.
             self.refresh_task = None;
+            self.artwork_task = None;
             return;
         }
 
-        self.track = None;
-        cx.notify();
+        self.update_track(None, cx);
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
             let Some(manager) = SessionManager::connect().await else {
                 return;
@@ -28,10 +31,7 @@ impl MusicPlayer {
             loop {
                 let track = NowPlaying::read(&manager).await;
                 if this
-                    .update(cx, |player, cx| {
-                        player.track = track;
-                        cx.notify();
-                    })
+                    .update(cx, |player, cx| player.update_track(track, cx))
                     .is_err()
                 {
                     break;
@@ -40,6 +40,46 @@ impl MusicPlayer {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
             }
         }));
+    }
+
+    fn update_track(&mut self, track: Option<NowPlaying>, cx: &mut Context<Self>) {
+        let same_artwork = match (&self.track, &track) {
+            (Some(previous), Some(next)) => previous.has_same_artwork(next),
+            (None, None) => true,
+            _ => false,
+        };
+        self.track = track;
+
+        if !same_artwork {
+            // Cancel the old load before a different track can replace the cover.
+            self.artwork_task = None;
+            if let Some(artwork) = self.artwork.take() {
+                cx.drop_image(artwork, None);
+            }
+            if let Some(track) = self.track.clone() {
+                let svg_renderer = cx.svg_renderer();
+                self.artwork_task = Some(cx.spawn(async move |this, cx| {
+                    let Some((content_type, bytes)) = track.read_artwork().await else {
+                        return;
+                    };
+                    let artwork = cx
+                        .background_executor()
+                        .spawn(async move {
+                            let format = artwork_format(&content_type, &bytes)?;
+                            Image::from_bytes(format, bytes)
+                                .to_image_data(svg_renderer)
+                                .ok()
+                        })
+                        .await;
+                    let _ = this.update(cx, |player, cx| {
+                        player.artwork = artwork;
+                        cx.notify();
+                    });
+                }));
+            }
+        }
+
+        cx.notify();
     }
 
     fn button(
@@ -119,6 +159,7 @@ impl Render for MusicPlayer {
                             .size(px(54.0))
                             .flex_none()
                             .rounded_lg()
+                            .overflow_hidden()
                             .bg(rgb(0x1b1b1b))
                             .flex()
                             .items_center()
@@ -126,7 +167,15 @@ impl Render for MusicPlayer {
                             .font_family("Segoe UI Symbol")
                             .text_size(px(27.0))
                             .text_color(rgb(0x858585))
-                            .child("♫"),
+                            .when_some(self.artwork.clone(), |tile, artwork| {
+                                tile.child(
+                                    img(artwork)
+                                        .size_full()
+                                        .rounded_lg()
+                                        .object_fit(ObjectFit::Cover),
+                                )
+                            })
+                            .when(self.artwork.is_none(), |tile| tile.child("♫")),
                     )
                     .child(
                         div()
@@ -192,6 +241,30 @@ impl Render for MusicPlayer {
                         cx,
                     )),
             )
+    }
+}
+
+fn artwork_format(content_type: &str, bytes: &[u8]) -> Option<ImageFormat> {
+    // Some media apps provide a generic content type for their artwork.
+    match bytes {
+        [0x89, b'P', b'N', b'G', ..] => Some(ImageFormat::Png),
+        [0xff, 0xd8, 0xff, ..] => Some(ImageFormat::Jpeg),
+        [
+            b'R',
+            b'I',
+            b'F',
+            b'F',
+            _,
+            _,
+            _,
+            _,
+            b'W',
+            b'E',
+            b'B',
+            b'P',
+            ..,
+        ] => Some(ImageFormat::Webp),
+        _ => ImageFormat::from_mime_type(content_type),
     }
 }
 
