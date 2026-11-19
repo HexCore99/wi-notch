@@ -1,6 +1,8 @@
+mod appearance;
 mod ui;
 mod windows;
 
+use appearance::AppearanceSettings;
 use gpui::{prelude::*, *};
 use ui::notch::Notch;
 
@@ -16,6 +18,7 @@ fn main() {
         let y = screen.origin.y + px(100.0);
 
         let bounds = Bounds::new(point(x, y), size(px(width), px(height)));
+        let appearance = cx.new(|_| AppearanceSettings::load());
 
         cx.open_window(
             WindowOptions {
@@ -30,7 +33,7 @@ fn main() {
             |window, cx| {
                 windows::window::configure_window(window)
                     .expect("Failed to remove the window border");
-                cx.new(|cx| Notch::new(width, height, cx))
+                cx.new(|cx| Notch::new(width, height, appearance, cx))
             },
         )
         .expect("Failed to open the notch window");

@@ -6204,6 +6204,9 @@ dependencies = [
  "chrono",
  "gpui",
  "raw-window-handle",
+ "serde",
+ "serde_json",
+ "tempfile",
  "windows 0.61.3",
  "windows-future",
 ]

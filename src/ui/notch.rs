@@ -1,5 +1,7 @@
 use super::animation::SizeAnimation;
 use super::music_player::MusicPlayer;
+use super::settings::SettingsView;
+use crate::appearance::{AppearanceSettings, Corners};
 use crate::ui::clock::Clock;
 use chrono::Local;
 use gpui::{prelude::*, *};
@@ -16,10 +18,18 @@ pub struct Notch {
 
     clock: Entity<Clock>,
     music_player: Entity<MusicPlayer>,
+    appearance: Entity<AppearanceSettings>,
+    settings_window: Option<WindowHandle<SettingsView>>,
 }
 
 impl Notch {
-    pub fn new(width: f32, height: f32, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        width: f32,
+        height: f32,
+        appearance: Entity<AppearanceSettings>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        cx.observe(&appearance, |_, _, cx| cx.notify()).detach();
         Self {
             width,
             height,
@@ -29,7 +39,27 @@ impl Notch {
 
             clock: cx.new(Clock::new),
             music_player: cx.new(|_| MusicPlayer::default()),
+            appearance,
+            settings_window: None,
         }
+    }
+
+    fn open_settings(&mut self, cx: &mut Context<Self>) {
+        if let Some(handle) = self.settings_window
+            && handle
+                .update(cx, |_, window, _| window.activate_window())
+                .is_ok()
+        {
+            return;
+        }
+
+        self.settings_window = match SettingsView::open(self.appearance.clone(), cx) {
+            Ok(handle) => Some(handle),
+            Err(error) => {
+                eprintln!("Failed to open settings: {error}");
+                None
+            }
+        };
     }
 }
 
@@ -56,17 +86,21 @@ impl Render for Notch {
 
         let date_opacity = ((expansion - 0.25) / 0.55).clamp(0.0, 1.0);
         let player_opacity = ((expansion - 0.6) / 0.35).clamp(0.0, 1.0);
+        let appearance = *self.appearance.read(cx);
 
         div()
             .id("notch")
             .w(px(self.width))
             .h(px(self.height))
+            .relative()
             .flex()
             .flex_col()
             .items_center()
             .overflow_hidden()
-            .bg(rgb(0x000000))
-            .rounded_xl()
+            .bg(rgb(appearance.background.color()))
+            .when(appearance.corners == Corners::Rounded, |notch| {
+                notch.rounded_xl()
+            })
             .text_color(rgb(0xffffff))
             .font_weight(FontWeight(600.0))
             .child(
@@ -94,6 +128,27 @@ impl Render for Notch {
                     div()
                         .opacity(player_opacity)
                         .child(self.music_player.clone()),
+                )
+            })
+            .when(self.expanded && player_opacity > 0.0, |notch| {
+                notch.child(
+                    div()
+                        .id("open-settings")
+                        .absolute()
+                        .top(px(5.0))
+                        .right(px(12.0))
+                        .size(px(25.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_md()
+                        .opacity(player_opacity)
+                        .cursor_pointer()
+                        .hover(|style| style.bg(rgba(0xffffff20)))
+                        .font_family("Segoe UI Symbol")
+                        .text_size(px(16.0))
+                        .child("⚙")
+                        .on_click(cx.listener(|this, _, _, cx| this.open_settings(cx))),
                 )
             })
             .on_hover(cx.listener(|this, hovered, _window, cx| {
