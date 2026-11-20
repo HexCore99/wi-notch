@@ -2,25 +2,32 @@ use ::windows::Win32::Foundation::{LPARAM, LRESULT, POINT, WPARAM};
 use ::windows::Win32::Graphics::Gdi::ClientToScreen;
 use ::windows::Win32::UI::HiDpi::GetDpiForWindow;
 use ::windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, GetWindowRect, HWND_TOPMOST, IsIconic, IsWindowVisible, SW_SHOWNOACTIVATE,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SetWindowPos, ShowWindow,
-    USER_DEFAULT_SCREEN_DPI,
+    EnumWindows, GetClientRect, GetWindowRect, HWND_TOPMOST, IsIconic, IsWindowVisible, SW_RESTORE,
+    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+    SetForegroundWindow, SetWindowPos, ShowWindow, ShowWindowAsync, USER_DEFAULT_SCREEN_DPI,
 };
 use ::windows::Win32::{
-    Foundation::{COLORREF, HWND, RECT},
+    Foundation::{COLORREF, E_FAIL, HWND, RECT},
     Graphics::Dwm::{
         DWMNCRP_DISABLED, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DWMWA_NCRENDERING_POLICY,
         DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DwmSetWindowAttribute,
     },
+    Storage::EnhancedStorage::PKEY_AppUserModel_ID,
+    System::Com::StructuredStorage::{PropVariantClear, PropVariantToString},
     UI::{
-        Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
+        Shell::{
+            DefSubclassProc,
+            PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow},
+            RemoveWindowSubclass, SetWindowSubclass,
+        },
         WindowsAndMessaging::{HTCLIENT, WM_NCDESTROY, WM_NCHITTEST},
     },
 };
+use ::windows::core::{BOOL, Error};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use super::display::Monitor;
-use crate::notch_geometry::notch_origin;
+use crate::notch_geometry::notch_origin_for_height;
 
 unsafe extern "system" fn notch_window_proc(
     hwnd: HWND,
@@ -51,6 +58,55 @@ fn window_hwnd(window: &gpui::Window) -> Result<HWND, Box<dyn std::error::Error>
         return Err("Expected a Windows window".into());
     };
     Ok(HWND(handle.hwnd.get() as *mut std::ffi::c_void))
+}
+
+pub(super) fn focus_app_window(app_id: &str) -> ::windows::core::Result<bool> {
+    let mut search = (app_id, None::<HWND>);
+    let _ = unsafe {
+        EnumWindows(
+            Some(find_matching_window),
+            LPARAM(std::ptr::from_mut(&mut search) as isize),
+        )
+    };
+    let Some(hwnd) = search.1 else {
+        return Ok(false);
+    };
+
+    unsafe {
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindowAsync(hwnd, SW_RESTORE);
+        }
+        if SetForegroundWindow(hwnd).as_bool() {
+            return Ok(true);
+        }
+    }
+    Err(Error::new(
+        E_FAIL,
+        "Windows could not focus the existing app window",
+    ))
+}
+
+unsafe extern "system" fn find_matching_window(hwnd: HWND, data: LPARAM) -> BOOL {
+    // EnumWindows calls this synchronously, while the search is on the stack.
+    let (app_id, matched) = unsafe { &mut *(data.0 as *mut (&str, Option<HWND>)) };
+    if unsafe { IsWindowVisible(hwnd) }.as_bool()
+        && window_app_id(hwnd).is_some_and(|id| id.eq_ignore_ascii_case(app_id))
+    {
+        *matched = Some(hwnd);
+        return false.into();
+    }
+    true.into()
+}
+
+fn window_app_id(hwnd: HWND) -> Option<String> {
+    let store: IPropertyStore = unsafe { SHGetPropertyStoreForWindow(hwnd) }.ok()?;
+    let mut value = unsafe { store.GetValue(&PKEY_AppUserModel_ID) }.ok()?;
+    let mut id = [0u16; 129];
+    let result = unsafe { PropVariantToString(&value, &mut id) };
+    let _ = unsafe { PropVariantClear(&mut value) };
+    result.ok()?;
+    let end = id.iter().position(|&unit| unit == 0)?;
+    Some(String::from_utf16_lossy(&id[..end]))
 }
 
 pub fn place_notch(
@@ -100,7 +156,8 @@ pub fn place_notch(
     let new_width = (width * scale).round() as i32 + frame_width;
     let new_height = (height * scale).round() as i32 + frame_height;
 
-    let origin = notch_origin(monitor.bounds, gpui::px(width), top_gap);
+    let origin =
+        notch_origin_for_height(monitor.bounds, gpui::px(width), gpui::px(height), top_gap);
     // SetWindowPos moves the outer window. Offset it to place the visible client area.
     let inset_x = ((client_origin.x - outer.left) as f32 * scale_ratio).round() as i32;
     let inset_y = ((client_origin.y - outer.top) as f32 * scale_ratio).round() as i32;
