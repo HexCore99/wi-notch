@@ -59,8 +59,12 @@ impl SettingsView {
         )
     }
 
-    fn sidebar_item(&self, page: Page, icon: &'static str, cx: &Context<Self>) -> Stateful<Div> {
+    fn sidebar_item(&self, page: Page, cx: &Context<Self>) -> Stateful<Div> {
         let selected = self.page == page;
+        let (icon, badge_color) = match page {
+            Page::Appearance => ("circle-half.svg", rgb(0x56627a)),
+            Page::Display => ("display-fill.svg", rgb(0x5454d4)),
+        };
         div()
             .id(page.title())
             .flex()
@@ -83,9 +87,8 @@ impl SettingsView {
                     .items_center()
                     .justify_center()
                     .rounded_md()
-                    .bg(rgb(0x344766))
-                    .font_family("Segoe UI Symbol")
-                    .child(icon),
+                    .bg(badge_color)
+                    .child(svg().path(icon).size(px(12.0)).text_color(rgb(0xffffff))),
             )
             .child(page.title())
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -130,8 +133,8 @@ impl Render for SettingsView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("Settings"),
                     )
-                    .child(self.sidebar_item(Page::Appearance, "◐", cx))
-                    .child(self.sidebar_item(Page::Display, "▣", cx)),
+                    .child(self.sidebar_item(Page::Appearance, cx))
+                    .child(self.sidebar_item(Page::Display, cx)),
             )
             .child(
                 div()

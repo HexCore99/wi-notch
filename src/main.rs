@@ -1,5 +1,6 @@
 #![windows_subsystem = "windows"]
 mod appearance;
+mod icons;
 mod notch_geometry;
 mod ui;
 mod windows;
@@ -11,7 +12,8 @@ use ui::notch::Notch;
 use windows::display::{monitors, selected_monitor};
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    let app = Application::new().with_assets(icons::Icons);
+    app.run(|cx: &mut App| {
         let width = 150.0;
         let height = 35.0;
 
