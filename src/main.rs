@@ -1,3 +1,4 @@
+#![windows_subsystem = "windows"]
 mod appearance;
 mod notch_geometry;
 mod ui;

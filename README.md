@@ -50,7 +50,7 @@ Launch **wi-notch (Development)** again. See the development package guide for r
 
 The bell shows a red dot for unread notifications. A new notification can briefly appear as a preview while the notch is collapsed. Click the preview to open the list, then select a row to open the source app.
 
-For supported desktop Zen and Firefox notifications, wi-notch looks up the original click action in Windows notification history with a read-only query. When that action is available, the browser can open the specific page. Otherwise, wi-notch opens or focuses the source app. Notification text stays in memory.
+For supported Microsoft Edge, Zen, and desktop Firefox notifications, wi-notch looks up the original click action in Windows notification history with a read-only query. When that action is available, the browser can open the specific page. Otherwise, wi-notch opens or focuses the source app. Notification text stays in memory.
 
 ## Settings
 

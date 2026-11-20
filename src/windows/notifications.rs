@@ -66,17 +66,24 @@ pub async fn open_notification(
     }
 
     let browser_id = browser_start_app_id(&app_id);
-    if let Some(start_id) = browser_id {
-        if Listener::connect().is_ok_and(|listener| listener.access() == Access::Allowed)
-            && executor
-                .spawn(async move { browser_toast::activate(&toast).is_some() })
-                .await
-        {
-            return Ok(());
+    let notification_id = toast.key.id;
+    if (browser_id.is_some() || browser_toast::is_edge(&app_id))
+        && let Ok(listener) = Listener::connect()
+        && listener.access() == Access::Allowed
+        && executor
+            .spawn(async move { browser_toast::activate(&toast).is_some() })
+            .await
+    {
+        // Forwarding the click directly skips Notification Center's dismissal.
+        if let Err(error) = listener.0.RemoveNotification(notification_id) {
+            eprintln!("Opened the notification but couldn't dismiss it: {error}");
         }
-        if focus_app_window(start_id)? {
-            return Ok(());
-        }
+        return Ok(());
+    }
+    if let Some(start_id) = browser_id
+        && focus_app_window(start_id)?
+    {
+        return Ok(());
     }
 
     match open_start_app(&app_id) {
