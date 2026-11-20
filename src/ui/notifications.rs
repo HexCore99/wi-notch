@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     io::Cursor,
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 use ::image::{
@@ -14,17 +15,76 @@ use crate::windows::notifications::{Access, Toast, ToastKey};
 
 const ROW_HEIGHT: f32 = 44.0;
 const ROW_GAP: f32 = 6.0;
+const ROW_STRIDE: f32 = ROW_HEIGHT + ROW_GAP;
 const LIST_PADDING: f32 = 4.0;
 const MAX_ROWS: usize = 6;
+const SCROLL_DURATION: Duration = Duration::from_millis(120);
+const ROW_FADE_DURATION: Duration = Duration::from_millis(240);
 const ICON_SIZE: u32 = 18;
 pub const PREVIEW_HEIGHT: f32 = 64.0;
+
+#[derive(Default)]
+struct ScrollAnimation {
+    from: f32,
+    target: f32,
+    started: Option<Instant>,
+}
+
+impl ScrollAnimation {
+    fn position(&self, now: Instant) -> (f32, bool) {
+        let Some(started) = self.started else {
+            return (self.target, false);
+        };
+        let progress =
+            (now.duration_since(started).as_secs_f32() / SCROLL_DURATION.as_secs_f32()).min(1.0);
+        let eased = 1.0 - (1.0 - progress).powi(2);
+        (
+            self.from + (self.target - self.from) * eased,
+            progress < 1.0,
+        )
+    }
+
+    fn scroll_by(&mut self, delta: f32, max: f32, precise: bool, now: Instant) -> bool {
+        let current = self.position(now).0.clamp(0.0, max);
+        let target = self.target.clamp(0.0, max);
+        // Reverse immediately if the user spins the wheel the other way.
+        let base = if precise || (target - current) * delta < 0.0 {
+            current
+        } else {
+            target
+        };
+        let next = (base + delta).clamp(0.0, max);
+        if next == target && !precise {
+            return false;
+        }
+
+        self.from = current;
+        self.target = next;
+        self.started = (!precise && next != current).then_some(now);
+        true
+    }
+}
+
+fn rows_height(count: usize) -> f32 {
+    (count as f32 * ROW_STRIDE - ROW_GAP).max(0.0) + 2.0 * LIST_PADDING
+}
+
+fn row_opacity(top: f32, viewport_height: f32) -> f32 {
+    let visible = ((top + ROW_HEIGHT).min(viewport_height) - top.max(0.0)).max(0.0);
+    (visible / ROW_HEIGHT).clamp(0.0, 1.0)
+}
+
+fn fade_in_progress(entered: Instant, now: Instant) -> f32 {
+    (now.duration_since(entered).as_secs_f32() / ROW_FADE_DURATION.as_secs_f32()).min(1.0)
+}
 
 pub struct Notifications {
     pub access: Access,
     pub requesting: bool,
     pub icons: HashMap<String, Option<Arc<RenderImage>>>,
     pub launch_error: Option<ToastKey>,
-    scroll: ScrollHandle,
+    scroll: ScrollAnimation,
+    visible_since: HashMap<ToastKey, Instant>,
     items: Vec<Toast>,
     unread: HashSet<ToastKey>,
     initialized: bool,
@@ -37,7 +97,8 @@ impl Notifications {
             requesting: false,
             icons: HashMap::new(),
             launch_error: None,
-            scroll: ScrollHandle::new(),
+            scroll: ScrollAnimation::default(),
+            visible_since: HashMap::new(),
             items: Vec::new(),
             unread: HashSet::new(),
             initialized: false,
@@ -58,6 +119,8 @@ impl Notifications {
             self.unread.clear();
             self.launch_error = None;
             self.initialized = false;
+            self.scroll = ScrollAnimation::default();
+            self.visible_since.clear();
             for image in self.icons.drain().filter_map(|(_, image)| image) {
                 drop_image(image);
             }
@@ -81,6 +144,18 @@ impl Notifications {
                 self.unread.insert(toast.key);
             }
         }
+        if open && self.scroll.target > 0.0 {
+            let offset = self.scroll.position(Instant::now()).0;
+            let first = ((offset - LIST_PADDING) / ROW_STRIDE).floor().max(0.0) as usize;
+            if let Some(anchor) = self.items.get(first)
+                && let Some(index) = items.iter().position(|toast| toast.key == anchor.key)
+            {
+                // Keep the first visible card in place when the rows above it change.
+                let shift = (index as f32 - first as f32) * ROW_STRIDE;
+                self.scroll.from = (self.scroll.from + shift).max(0.0);
+                self.scroll.target = (self.scroll.target + shift).max(0.0);
+            }
+        }
         self.initialized = true;
         self.items = items;
         (true, newest)
@@ -89,7 +164,8 @@ impl Notifications {
     pub fn open(&mut self) {
         self.unread.clear();
         self.launch_error = None;
-        self.scroll.set_offset(point(px(0.0), px(0.0)));
+        self.scroll = ScrollAnimation::default();
+        self.visible_since.clear();
     }
 
     pub fn find(&self, key: ToastKey) -> Option<&Toast> {
@@ -100,9 +176,22 @@ impl Notifications {
         if self.items.is_empty() {
             84.0
         } else {
-            let rows = self.items.len().min(MAX_ROWS) as f32;
-            rows * ROW_HEIGHT + (rows - 1.0) * ROW_GAP + 2.0 * LIST_PADDING
+            rows_height(self.items.len().min(MAX_ROWS))
         }
+    }
+
+    pub fn scroll(&mut self, height: f32, delta: ScrollDelta, line_height: Pixels) -> bool {
+        let pixels = delta.pixel_delta(line_height);
+        let distance = -f32::from(if pixels.y == px(0.0) {
+            pixels.x
+        } else {
+            pixels.y
+        });
+        let max = (rows_height(self.items.len()) - height.max(0.0)).max(0.0);
+        distance != 0.0
+            && self
+                .scroll
+                .scroll_by(distance, max, delta.precise(), Instant::now())
     }
 
     pub fn bell(&self) -> Stateful<Div> {
@@ -135,30 +224,68 @@ impl Notifications {
     }
 
     pub fn panel(
-        &self,
+        &mut self,
         height: f32,
+        window: &Window,
+        scroll: impl Fn(&ScrollWheelEvent, &mut Window, &mut App) + 'static,
         enable: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
         open_app: impl Fn(ToastKey, &mut App) + Clone + 'static,
     ) -> Stateful<Div> {
+        let height = height.max(0.0);
         let panel = div()
             .id("notifications-scroll")
             .w_full()
-            .h(px(height.max(0.0)))
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
+            .h(px(height))
+            .relative()
+            .overflow_hidden()
             .px(px(12.0));
         if self.access == Access::Allowed && !self.items.is_empty() {
-            return panel
-                .flex()
-                .flex_col()
-                .gap(px(ROW_GAP))
-                .py(px(LIST_PADDING))
-                .children(
-                    self.items
-                        .iter()
-                        .map(|toast| self.row(toast, open_app.clone())),
-                );
+            let now = Instant::now();
+            let (offset, mut animating) = self.scroll.position(now);
+            let offset = offset.clamp(0.0, (rows_height(self.items.len()) - height).max(0.0));
+
+            // Lay out one extra card at each edge before it starts entering the viewport.
+            let first_visible = ((offset - LIST_PADDING) / ROW_STRIDE).floor().max(0.0) as usize;
+            let first = first_visible.saturating_sub(1);
+            let end = ((offset + height - LIST_PADDING) / ROW_STRIDE)
+                .ceil()
+                .max(0.0) as usize;
+            let end = (end + 1).min(self.items.len());
+            let first_top = LIST_PADDING + first as f32 * ROW_STRIDE - offset;
+            let visible = &self.items[first..end];
+            self.visible_since
+                .retain(|key, _| visible.iter().any(|toast| toast.key == *key));
+            let mut rows = Vec::with_capacity(visible.len());
+            for (index, toast) in visible.iter().enumerate() {
+                let top = first_top + index as f32 * ROW_STRIDE;
+                let edge = row_opacity(top, height);
+                let opacity = if edge == 0.0 {
+                    self.visible_since.remove(&toast.key);
+                    0.0
+                } else {
+                    let entered = *self.visible_since.entry(toast.key).or_insert(now);
+                    let fade = fade_in_progress(entered, now);
+                    animating |= fade < 1.0;
+                    edge * fade
+                };
+                rows.push(self.row(toast, open_app.clone()).opacity(opacity));
+            }
+            if animating {
+                window.request_animation_frame();
+            }
+            return panel.on_scroll_wheel(scroll).child(
+                div()
+                    .absolute()
+                    .left(px(12.0))
+                    .right(px(12.0))
+                    .top(px(first_top))
+                    .flex()
+                    .flex_col()
+                    .gap(px(ROW_GAP))
+                    .children(rows),
+            );
         }
+        self.visible_since.clear();
 
         let message = match self.access {
             Access::Unpackaged => {
@@ -175,7 +302,7 @@ impl Notifications {
             Access::Allowed if !self.initialized => "Checking Windows notifications…",
             Access::Allowed => "No notifications",
         };
-        panel.child(
+        panel.overflow_y_scroll().child(
             div()
                 .py(px(8.0))
                 .flex()
@@ -402,9 +529,68 @@ fn message(toast: &Toast, launch_failed: bool) -> Div {
 
 #[cfg(test)]
 mod tests {
-    use super::{ICON_SIZE, Notifications, resize_icon, trim_transparent_padding};
+    use super::{
+        ICON_SIZE, Notifications, ROW_FADE_DURATION, ROW_HEIGHT, ROW_STRIDE, SCROLL_DURATION,
+        ScrollAnimation, fade_in_progress, resize_icon, row_opacity, trim_transparent_padding,
+    };
     use crate::windows::notifications::{Access, Toast, ToastKey};
     use ::image::{Rgba, RgbaImage};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn wheel_animation_accumulates_and_reverses_from_the_visible_offset() {
+        let start = Instant::now();
+        let mut scroll = ScrollAnimation::default();
+        assert!(scroll.scroll_by(60.0, 100.0, false, start));
+        assert_eq!(scroll.position(start), (0.0, true));
+
+        let next = start + Duration::from_millis(40);
+        let visible = scroll.position(next).0;
+        assert!((0.0..60.0).contains(&visible));
+        assert!(scroll.scroll_by(60.0, 100.0, false, next));
+        assert_eq!(scroll.position(next).0, visible);
+        assert_eq!(scroll.target, 100.0);
+
+        assert!(scroll.scroll_by(-60.0, 100.0, false, next));
+        assert_eq!(scroll.position(next).0, visible);
+        assert_eq!(scroll.position(next + SCROLL_DURATION), (0.0, false));
+    }
+
+    #[test]
+    fn rows_fade_at_both_viewport_edges() {
+        let viewport = 300.0;
+        assert_eq!(row_opacity(-ROW_HEIGHT, viewport), 0.0);
+        assert_eq!(row_opacity(-ROW_HEIGHT / 2.0, viewport), 0.5);
+        assert_eq!(row_opacity(0.0, viewport), 1.0);
+        assert_eq!(row_opacity(viewport - ROW_HEIGHT, viewport), 1.0);
+        assert_eq!(row_opacity(viewport - ROW_HEIGHT / 2.0, viewport), 0.5);
+        assert_eq!(row_opacity(viewport, viewport), 0.0);
+    }
+
+    #[test]
+    fn entering_rows_keep_fading_after_the_wheel_stops() {
+        let start = Instant::now();
+        assert_eq!(fade_in_progress(start, start), 0.0);
+        assert!(fade_in_progress(start, start + SCROLL_DURATION) < 1.0);
+        assert_eq!(fade_in_progress(start, start + ROW_FADE_DURATION), 1.0);
+    }
+
+    #[test]
+    fn a_new_notification_keeps_the_scrolled_rows_in_place() {
+        let mut notifications = Notifications::new(Access::Allowed);
+        let mut items: Vec<_> = (1..=12).rev().map(|id| toast(id, id.into())).collect();
+        notifications.sync(items.clone(), true);
+        let start = Instant::now();
+        let offset = 2.5 * ROW_STRIDE;
+        notifications.scroll.scroll_by(offset, 300.0, true, start);
+
+        items.insert(0, toast(13, 13));
+        notifications.sync(items, true);
+        assert_eq!(
+            notifications.scroll.position(start),
+            (offset + ROW_STRIDE, false)
+        );
+    }
 
     fn toast(id: u32, created: i64) -> Toast {
         Toast {

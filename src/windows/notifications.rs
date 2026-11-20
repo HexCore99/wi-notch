@@ -13,6 +13,7 @@ use ::windows::{
     Win32::{
         Foundation::{E_INVALIDARG, ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER},
         Storage::Packaging::Appx::GetCurrentPackageFullName,
+        System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize},
         UI::{
             Shell::{SEE_MASK_FLAG_NO_UI, SHELLEXECUTEINFOW, ShellExecuteExW},
             WindowsAndMessaging::SW_SHOWNORMAL,
@@ -151,11 +152,39 @@ impl Listener {
         }
     }
 
-    pub async fn read(&self) -> ::windows::core::Result<Snapshot> {
+    pub fn poll() -> (Access, Option<Snapshot>) {
+        // Create the listener in the same COM apartment that reads from it.
+        if unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok() }.is_err() {
+            return (Access::Unavailable, None);
+        }
+
+        let snapshot = match Self::connect() {
+            Ok(listener) => listener.read_snapshot(),
+            Err(access) => (access, None),
+        };
+        unsafe { CoUninitialize() };
+        snapshot
+    }
+
+    fn read_snapshot(&self) -> (Access, Option<Snapshot>) {
+        let mut access = self.access();
+        let snapshot = if access == Access::Allowed {
+            let snapshot = self.read().ok();
+            // Access can be revoked while waiting for Windows.
+            access = self.access();
+            snapshot.filter(|_| access == Access::Allowed)
+        } else {
+            None
+        };
+
+        (access, snapshot)
+    }
+
+    fn read(&self) -> ::windows::core::Result<Snapshot> {
         let notifications = self
             .0
             .GetNotificationsAsync(NotificationKinds::Toast)?
-            .await?;
+            .get()?;
         let mut snapshot = Snapshot::default();
         for index in 0..notifications.Size()? {
             if let Ok(notification) = notifications.GetAt(index)

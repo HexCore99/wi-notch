@@ -7,7 +7,7 @@ use super::settings::SettingsView;
 use crate::appearance::{AppearanceSettings, Corners};
 use crate::notch_geometry::EXPANDED_SIZE;
 use crate::ui::clock::Clock;
-use crate::windows::display::{monitors, selected_monitor};
+use crate::windows::display::{Monitor, monitors, selected_monitor};
 use crate::windows::notifications::{
     Access, Listener, Snapshot, ToastKey, open_notification, read_icon,
 };
@@ -31,6 +31,7 @@ pub struct Notch {
     mode: Mode,
     target_size: (f32, f32),
     animation: Option<SizeAnimation>,
+    displays: Vec<Monitor>,
     _placement_watch: Task<()>,
     _notification_watch: Option<Task<()>>,
     preview_timeout: Option<Task<()>>,
@@ -51,7 +52,11 @@ impl Notch {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        cx.observe(&appearance, |_, _, cx| cx.notify()).detach();
+        cx.observe_in(&appearance, window, |this, _, window, cx| {
+            this.sync_placement(window, cx);
+            cx.notify();
+        })
+        .detach();
         cx.observe_window_activation(window, |this, window, cx| {
             if !window.is_window_active() && this.mode == Mode::Notifications {
                 this.set_mode(Mode::Compact, cx);
@@ -60,12 +65,15 @@ impl Notch {
         .detach();
         // A primary-display change can leave the notch off screen without a render.
         let placement_watch = cx.spawn_in(window, async move |this, cx| {
+            let executor = cx.background_executor().clone();
             loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(500))
-                    .await;
+                executor.timer(Duration::from_millis(500)).await;
+                let displays = executor.spawn(async { monitors() }).await;
                 if this
-                    .update_in(cx, |notch, window, cx| notch.sync_placement(window, cx))
+                    .update_in(cx, |notch, window, cx| {
+                        notch.displays = displays;
+                        notch.sync_placement(window, cx);
+                    })
                     .is_err()
                 {
                     break;
@@ -76,18 +84,11 @@ impl Notch {
         let access = listener
             .as_ref()
             .map_or_else(|access| *access, Listener::access);
-        let notification_watch = listener.ok().map(|listener| {
+        let notification_watch = listener.is_ok().then(|| {
             cx.spawn_in(window, async move |this, cx| {
+                let executor = cx.background_executor().clone();
                 loop {
-                    let mut access = listener.access();
-                    let snapshot = if access == Access::Allowed {
-                        let snapshot = listener.read().await.ok();
-                        // Discard a read if access was revoked while waiting for Windows.
-                        access = listener.access();
-                        snapshot.filter(|_| access == Access::Allowed)
-                    } else {
-                        None
-                    };
+                    let (access, snapshot) = executor.spawn(async { Listener::poll() }).await;
                     if this
                         .update_in(cx, |notch, _, cx| {
                             notch.sync_notifications(access, snapshot, cx)
@@ -96,11 +97,11 @@ impl Notch {
                     {
                         break;
                     }
-                    cx.background_executor().timer(Duration::from_secs(1)).await;
+                    executor.timer(Duration::from_secs(1)).await;
                 }
             })
         });
-        Self {
+        let notch = Self {
             width,
             height,
             compact_size: (width, height),
@@ -108,6 +109,7 @@ impl Notch {
             mode: Mode::Compact,
             target_size: (width, height),
             animation: None,
+            displays: monitors(),
             _placement_watch: placement_watch,
             _notification_watch: notification_watch,
             preview_timeout: None,
@@ -118,7 +120,9 @@ impl Notch {
             notifications: Notifications::new(access),
             appearance,
             settings_window: None,
-        }
+        };
+        notch.sync_placement(window, cx);
+        notch
     }
 
     fn hover_mode(&self) -> Mode {
@@ -285,8 +289,7 @@ impl Notch {
 
     fn sync_placement(&self, window: &Window, cx: &App) {
         let settings = self.appearance.read(cx);
-        let monitors = monitors();
-        if let Some(monitor) = selected_monitor(&monitors, settings.monitor.as_deref())
+        if let Some(monitor) = selected_monitor(&self.displays, settings.monitor.as_deref())
             && let Err(error) = crate::windows::window::place_notch(
                 window,
                 cx,
@@ -355,6 +358,7 @@ impl Render for Notch {
             let (width, height, finished) = animation.sample();
             self.width = width.max(self.compact_size.0);
             self.height = height.clamp(self.compact_size.1.min(screen_height), screen_height);
+            self.sync_placement(window, cx);
 
             if finished {
                 self.animation = None;
@@ -362,8 +366,6 @@ impl Render for Notch {
                 window.request_animation_frame();
             }
         }
-
-        self.sync_placement(window, cx);
 
         let expansion = ((self.width - self.compact_size.0)
             / (EXPANDED_SIZE.0 - self.compact_size.0))
@@ -426,8 +428,18 @@ impl Render for Notch {
             })
             .when(self.mode == Mode::Notifications, |notch| {
                 let view = cx.weak_entity();
+                let height = self.height.min(target.1) - self.compact_size.1;
                 notch.child(self.notifications.panel(
-                    self.height.min(target.1) - self.compact_size.1,
+                    height,
+                    window,
+                    cx.listener(move |this, event: &ScrollWheelEvent, window, cx| {
+                        if this
+                            .notifications
+                            .scroll(height, event.delta, window.line_height())
+                        {
+                            cx.notify();
+                        }
+                    }),
                     cx.listener(|this, _, _, cx| this.request_notification_access(cx)),
                     move |key, cx| {
                         let _ = view.update(cx, |this, cx| this.open_notification_app(key, cx));
