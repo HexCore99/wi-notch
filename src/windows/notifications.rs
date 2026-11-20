@@ -11,7 +11,9 @@ use ::windows::{
         NotificationKinds, UserNotification,
     },
     Win32::{
-        Foundation::{E_INVALIDARG, ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER},
+        Foundation::{
+            E_ACCESSDENIED, E_INVALIDARG, ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER,
+        },
         Storage::Packaging::Appx::GetCurrentPackageFullName,
         System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize},
         UI::{
@@ -22,7 +24,9 @@ use ::windows::{
     core::{Error, HRESULT, PCWSTR, w},
 };
 
-use super::{browser_toast, streams::read_image_stream, window::focus_app_window};
+use super::{
+    browser_toast, notification_history, streams::read_image_stream, window::focus_app_window,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Access {
@@ -51,7 +55,7 @@ pub struct Toast {
 #[derive(Default)]
 pub struct Snapshot {
     pub toasts: Vec<Toast>,
-    pub apps: HashMap<String, AppDisplayInfo>,
+    pub apps: HashMap<String, Option<AppDisplayInfo>>,
 }
 
 pub struct Listener(UserNotificationListener);
@@ -66,7 +70,7 @@ pub async fn open_notification(
     }
 
     let browser_id = browser_start_app_id(&app_id);
-    let notification_id = toast.key.id;
+    let key = toast.key;
     if (browser_id.is_some() || browser_toast::is_edge(&app_id))
         && let Ok(listener) = Listener::connect()
         && listener.access() == Access::Allowed
@@ -75,7 +79,7 @@ pub async fn open_notification(
             .await
     {
         // Forwarding the click directly skips Notification Center's dismissal.
-        if let Err(error) = listener.0.RemoveNotification(notification_id) {
+        if let Err(error) = listener.dismiss(key) {
             eprintln!("Opened the notification but couldn't dismiss it: {error}");
         }
         return Ok(());
@@ -98,7 +102,7 @@ pub async fn open_notification(
     }
 }
 
-fn browser_start_app_id(app_id: &str) -> Option<&str> {
+pub(super) fn browser_start_app_id(app_id: &str) -> Option<&str> {
     // These desktop browsers use a separate toast ID built from their Start menu ID.
     let install_hash = app_id
         .strip_prefix("ZenToast-")
@@ -144,6 +148,17 @@ impl Listener {
             Ok(AccessStatus::Unspecified) => Access::Unspecified,
             _ => Access::Unavailable,
         }
+    }
+
+    pub fn dismiss(&self, key: ToastKey) -> ::windows::core::Result<()> {
+        if self.access() != Access::Allowed {
+            return Err(Error::from_hresult(E_ACCESSDENIED));
+        }
+        let notification = self.0.GetNotification(key.id)?;
+        if notification.CreationTime()?.UniversalTime == key.created {
+            self.0.RemoveNotification(key.id)?;
+        }
+        Ok(())
     }
 
     // Call this from the GPUI foreground task started by the Enable button.
@@ -210,7 +225,7 @@ impl Listener {
 
 fn read_toast(
     notification: &UserNotification,
-    apps: &mut HashMap<String, AppDisplayInfo>,
+    apps: &mut HashMap<String, Option<AppDisplayInfo>>,
 ) -> Option<Toast> {
     let key = ToastKey {
         id: notification.Id().ok()?,
@@ -229,10 +244,11 @@ fn read_toast(
         .map(|name| name.to_string())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "Windows".into());
-    if let Some(display) = display
-        && !app_id.is_empty()
-    {
-        apps.entry(app_id.clone()).or_insert(display);
+    if !app_id.is_empty() {
+        let known_display = apps.entry(app_id.clone()).or_default();
+        if known_display.is_none() {
+            *known_display = display;
+        }
     }
 
     let lines = toast_text(notification).unwrap_or_default();
@@ -274,13 +290,20 @@ fn toast_text(notification: &UserNotification) -> Option<Vec<String>> {
 pub async fn read_icon(app: AppDisplayInfo) -> Option<Vec<u8>> {
     let logo = app
         .GetLogo(Size {
-            Width: 32.0,
-            Height: 32.0,
+            Width: 64.0,
+            Height: 64.0,
         })
         .ok()?;
     let stream = logo.OpenReadAsync().ok()?.await.ok()?;
     let (_, bytes) = read_image_stream(stream, 1024 * 1024).await?;
     Some(bytes)
+}
+
+pub fn read_artwork(toasts: &[Toast]) -> Option<impl Iterator<Item = (ToastKey, Vec<u8>)> + '_> {
+    let db = notification_history::open_history()?;
+    Some(toasts.iter().filter_map(move |toast| {
+        Some((toast.key, notification_history::read_artwork(&db, toast)?))
+    }))
 }
 
 #[cfg(test)]

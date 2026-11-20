@@ -13,7 +13,7 @@ use gpui::{prelude::*, *};
 
 use crate::windows::notifications::{Access, Toast, ToastKey};
 
-const ROW_HEIGHT: f32 = 44.0;
+const ROW_HEIGHT: f32 = 70.0;
 const ROW_GAP: f32 = 6.0;
 const ROW_STRIDE: f32 = ROW_HEIGHT + ROW_GAP;
 const LIST_PADDING: f32 = 4.0;
@@ -82,11 +82,13 @@ pub struct Notifications {
     pub access: Access,
     pub requesting: bool,
     pub icons: HashMap<String, Option<Arc<RenderImage>>>,
-    pub launch_error: Option<ToastKey>,
+    pub artwork: HashMap<ToastKey, Option<Arc<RenderImage>>>,
+    pub action_error: Option<(ToastKey, &'static str)>,
     scroll: ScrollAnimation,
     visible_since: HashMap<ToastKey, Instant>,
     items: Vec<Toast>,
     unread: HashSet<ToastKey>,
+    dismissed: HashSet<ToastKey>,
     initialized: bool,
 }
 
@@ -96,11 +98,13 @@ impl Notifications {
             access,
             requesting: false,
             icons: HashMap::new(),
-            launch_error: None,
+            artwork: HashMap::new(),
+            action_error: None,
             scroll: ScrollAnimation::default(),
             visible_since: HashMap::new(),
             items: Vec::new(),
             unread: HashSet::new(),
+            dismissed: HashSet::new(),
             initialized: false,
         }
     }
@@ -117,18 +121,28 @@ impl Notifications {
         if access != Access::Allowed {
             self.items.clear();
             self.unread.clear();
-            self.launch_error = None;
+            self.dismissed.clear();
+            self.action_error = None;
             self.initialized = false;
             self.scroll = ScrollAnimation::default();
             self.visible_since.clear();
             for image in self.icons.drain().filter_map(|(_, image)| image) {
                 drop_image(image);
             }
+            for image in self.artwork.drain().filter_map(|(_, image)| image) {
+                drop_image(image);
+            }
         }
         true
     }
 
-    pub fn sync(&mut self, items: Vec<Toast>, open: bool) -> (bool, Option<ToastKey>) {
+    pub fn sync(&mut self, mut items: Vec<Toast>, open: bool) -> (bool, Option<ToastKey>) {
+        if !self.dismissed.is_empty() {
+            // A poll started before the click can still contain the dismissed toast.
+            self.dismissed
+                .retain(|key| items.iter().any(|toast| toast.key == *key));
+            items.retain(|toast| !self.dismissed.contains(&toast.key));
+        }
         let changed = !self.initialized || self.items != items;
         if !changed {
             return (false, None);
@@ -163,13 +177,20 @@ impl Notifications {
 
     pub fn open(&mut self) {
         self.unread.clear();
-        self.launch_error = None;
+        self.action_error = None;
         self.scroll = ScrollAnimation::default();
         self.visible_since.clear();
     }
 
     pub fn find(&self, key: ToastKey) -> Option<&Toast> {
         self.items.iter().find(|toast| toast.key == key)
+    }
+
+    pub fn dismiss(&mut self, key: ToastKey) {
+        self.dismissed.insert(key);
+        self.items.retain(|toast| toast.key != key);
+        self.unread.remove(&key);
+        self.visible_since.remove(&key);
     }
 
     pub fn list_height(&self) -> f32 {
@@ -230,6 +251,7 @@ impl Notifications {
         scroll: impl Fn(&ScrollWheelEvent, &mut Window, &mut App) + 'static,
         enable: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
         open_app: impl Fn(ToastKey, &mut App) + Clone + 'static,
+        dismiss: impl Fn(ToastKey, &mut App) + Clone + 'static,
     ) -> Stateful<Div> {
         let height = height.max(0.0);
         let panel = div()
@@ -268,7 +290,10 @@ impl Notifications {
                     animating |= fade < 1.0;
                     edge * fade
                 };
-                rows.push(self.row(toast, open_app.clone()).opacity(opacity));
+                rows.push(
+                    self.row(toast, open_app.clone(), dismiss.clone())
+                        .opacity(opacity),
+                );
             }
             if animating {
                 window.request_animation_frame();
@@ -333,11 +358,18 @@ impl Notifications {
         )
     }
 
-    pub fn preview(&self, toast: &Toast) -> Stateful<Div> {
+    pub fn preview(
+        &self,
+        toast: &Toast,
+        dismiss: impl Fn(ToastKey, &mut App) + 'static,
+    ) -> Stateful<Div> {
+        let key = toast.key;
         div()
             .id("notification-preview")
             .size_full()
             .px(px(16.0))
+            .pr(px(36.0))
+            .relative()
             .flex()
             .items_center()
             .gap(px(10.0))
@@ -359,7 +391,8 @@ impl Notifications {
                         )
                     }),
             )
-            .child(message(toast, false))
+            .child(message(toast, self.error_message(key), 1))
+            .children(self.artwork_thumbnail(key))
             .child(
                 div()
                     .flex_none()
@@ -367,9 +400,15 @@ impl Notifications {
                     .text_color(rgb(0x9b9b9b))
                     .child("now"),
             )
+            .child(dismiss_button(move |cx| dismiss(key, cx)))
     }
 
-    fn row(&self, toast: &Toast, open_app: impl Fn(ToastKey, &mut App) + 'static) -> Stateful<Div> {
+    fn row(
+        &self,
+        toast: &Toast,
+        open_app: impl Fn(ToastKey, &mut App) + 'static,
+        dismiss: impl Fn(ToastKey, &mut App) + 'static,
+    ) -> Stateful<Div> {
         let key = toast.key;
         div()
             .id(SharedString::from(format!(
@@ -378,19 +417,41 @@ impl Notifications {
             )))
             .h(px(ROW_HEIGHT))
             .flex_none()
+            .relative()
             .rounded_lg()
             .bg(rgb(0x191919))
             .flex()
             .items_center()
             .gap(px(10.0))
             .px(px(8.0))
+            .pr(px(34.0))
             .child(self.icon_tile(toast, Some(app_accent(toast))))
-            .child(message(toast, self.launch_error == Some(key)))
+            .child(message(toast, self.error_message(key), 2))
+            .children(self.artwork_thumbnail(key))
+            .child(dismiss_button(move |cx| dismiss(key, cx)))
             .when(!toast.app_id.is_empty(), |row| {
                 row.cursor_pointer()
                     .hover(|style| style.bg(rgb(0x262626)))
                     .on_click(move |_, _, cx| open_app(key, cx))
             })
+    }
+
+    fn error_message(&self, key: ToastKey) -> Option<&'static str> {
+        self.action_error
+            .filter(|(failed_key, _)| *failed_key == key)
+            .map(|(_, message)| message)
+    }
+
+    fn artwork_thumbnail(&self, key: ToastKey) -> Option<Img> {
+        let image = self.artwork.get(&key)?.as_ref()?;
+        Some(
+            img(image.clone())
+                .w(px(68.0))
+                .h(px(48.0))
+                .flex_none()
+                .rounded_md()
+                .object_fit(ObjectFit::Contain),
+        )
     }
 
     fn icon_tile(&self, toast: &Toast, accent: Option<u32>) -> Div {
@@ -425,6 +486,28 @@ impl Notifications {
     }
 }
 
+fn dismiss_button(dismiss: impl Fn(&mut App) + 'static) -> Stateful<Div> {
+    div()
+        .id("dismiss-notification")
+        .absolute()
+        .top(px(5.0))
+        .right(px(5.0))
+        .size(px(25.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_md()
+        .cursor_pointer()
+        .text_size(px(17.0))
+        .text_color(rgb(0xcccccc))
+        .hover(|style| style.bg(rgb(0x3a3a3a)).text_color(rgb(0xffffff)))
+        .child("×")
+        .on_click(move |_, _, cx| {
+            cx.stop_propagation();
+            dismiss(cx);
+        })
+}
+
 fn app_accent(toast: &Toast) -> u32 {
     const COLORS: [u32; 4] = [0x64db88, 0x66acff, 0xbea6f5, 0xf2b974];
     let source = if toast.app_id.is_empty() {
@@ -437,23 +520,38 @@ fn app_accent(toast: &Toast) -> u32 {
 }
 
 pub(super) fn render_icon(bytes: &[u8]) -> Option<Arc<RenderImage>> {
+    render_icon_pixels(&decode_image(bytes, 2048)?.into_rgba8())
+}
+
+pub(super) fn render_icon_pixels(pixels: &RgbaImage) -> Option<Arc<RenderImage>> {
+    let pixels = trim_transparent_padding(pixels)?;
+    Some(render_image(resize_icon(pixels)))
+}
+
+pub(super) fn render_artwork(bytes: &[u8]) -> Option<Arc<RenderImage>> {
+    let pixels = decode_image(bytes, 2048)?.thumbnail(136, 96).into_rgba8();
+    Some(render_image(pixels))
+}
+
+fn decode_image(bytes: &[u8], max_dimension: u32) -> Option<DynamicImage> {
     let mut reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .ok()?;
     let mut limits = Limits::default();
-    limits.max_image_width = Some(1024);
-    limits.max_image_height = Some(1024);
-    limits.max_alloc = Some(16 * 1024 * 1024);
+    limits.max_image_width = Some(max_dimension);
+    limits.max_image_height = Some(max_dimension);
+    limits.max_alloc = Some(32 * 1024 * 1024);
     reader.limits(limits);
 
-    let pixels = reader.decode().ok()?.into_rgba8();
-    let pixels = trim_transparent_padding(&pixels)?;
-    let mut pixels = resize_icon(pixels);
+    reader.decode().ok()
+}
+
+fn render_image(mut pixels: RgbaImage) -> Arc<RenderImage> {
     // GPUI stores render images in BGRA format.
     for pixel in pixels.pixels_mut() {
         pixel.0.swap(0, 2);
     }
-    Some(Arc::new(RenderImage::new([Frame::new(pixels)])))
+    Arc::new(RenderImage::new([Frame::new(pixels)]))
 }
 
 fn resize_icon(mut pixels: RgbaImage) -> RgbaImage {
@@ -497,14 +595,12 @@ fn trim_transparent_padding(pixels: &RgbaImage) -> Option<RgbaImage> {
     Some(crop_imm(pixels, left, top, right - left, bottom - top).to_image())
 }
 
-fn message(toast: &Toast, launch_failed: bool) -> Div {
-    let subtitle = if launch_failed {
-        "Windows couldn’t open this app."
-    } else if toast.body.is_empty() {
+fn message(toast: &Toast, error: Option<&str>, lines: usize) -> Div {
+    let subtitle = error.unwrap_or(if toast.body.is_empty() {
         &toast.app_name
     } else {
         &toast.body
-    };
+    });
     div()
         .flex_1()
         .min_w(px(0.0))
@@ -519,7 +615,8 @@ fn message(toast: &Toast, launch_failed: bool) -> Div {
         )
         .child(
             div()
-                .truncate()
+                .overflow_hidden()
+                .line_clamp(lines)
                 .text_size(px(11.0))
                 .font_weight(FontWeight::NORMAL)
                 .text_color(rgb(0xb9b9b9))
@@ -648,6 +745,23 @@ mod tests {
             (true, None)
         );
         assert!(list.unread.is_empty());
+    }
+
+    #[test]
+    fn stale_poll_does_not_restore_a_dismissed_card() {
+        let mut list = Notifications::new(Access::Allowed);
+        let selected = toast(1, 10);
+        let other = toast(2, 20);
+        list.sync(vec![other.clone(), selected.clone()], true);
+
+        list.dismiss(selected.key);
+        list.sync(vec![other.clone(), selected.clone()], true);
+        assert_eq!(list.items, [other.clone()]);
+
+        let replacement = toast(selected.key.id, 30);
+        list.sync(vec![replacement.clone(), other.clone()], true);
+        assert_eq!(list.items, [replacement, other]);
+        assert!(list.dismissed.is_empty());
     }
 
     #[test]

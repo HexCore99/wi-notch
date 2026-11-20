@@ -1,15 +1,18 @@
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use super::animation::SizeAnimation;
 use super::music_player::MusicPlayer;
-use super::notifications::{Notifications, PREVIEW_HEIGHT, render_icon};
+use super::notifications::{
+    Notifications, PREVIEW_HEIGHT, render_artwork, render_icon, render_icon_pixels,
+};
 use super::settings::SettingsView;
 use crate::appearance::{AppearanceSettings, Corners};
 use crate::notch_geometry::EXPANDED_SIZE;
 use crate::ui::clock::Clock;
+use crate::windows::app_icons::{read_registered_icon, read_shell_icon};
 use crate::windows::display::{Monitor, monitors, selected_monitor};
 use crate::windows::notifications::{
-    Access, Listener, Snapshot, ToastKey, open_notification, read_icon,
+    Access, Listener, Snapshot, Toast, ToastKey, open_notification, read_artwork, read_icon,
 };
 use chrono::Local;
 use gpui::{prelude::*, *};
@@ -176,13 +179,37 @@ impl Notch {
                     Ok(()) => {}
                     Err(error) => {
                         eprintln!("Failed to open the notification's source app: {error}");
-                        this.notifications.launch_error = Some(key);
+                        this.notifications.action_error =
+                            Some((key, "Windows couldn’t open this app."));
                         cx.notify();
                     }
                 }
             });
         })
         .detach();
+    }
+
+    fn dismiss_notification(&mut self, key: ToastKey, cx: &mut Context<Self>) {
+        if self.notifications.find(key).is_none() {
+            return;
+        }
+        let Ok(listener) = Listener::connect() else {
+            return;
+        };
+        match listener.dismiss(key) {
+            Ok(()) => {
+                self.notifications.dismiss(key);
+                if self.mode == Mode::Preview(key) {
+                    self.set_mode(self.hover_mode(), cx);
+                }
+            }
+            Err(error) => {
+                eprintln!("Failed to dismiss a Windows notification: {error}");
+                self.notifications.action_error =
+                    Some((key, "Windows couldn’t dismiss this notification."));
+            }
+        }
+        cx.notify();
     }
 
     fn request_notification_access(&mut self, cx: &mut Context<Self>) {
@@ -215,6 +242,7 @@ impl Notch {
             .notifications
             .set_access(access, |image| cx.drop_image(image, None));
         if let Some(snapshot) = snapshot {
+            self.sync_notification_artwork(&snapshot.toasts, cx);
             let (changed, newest) = self
                 .notifications
                 .sync(snapshot.toasts, self.mode == Mode::Notifications);
@@ -248,9 +276,67 @@ impl Notch {
         }
     }
 
+    fn sync_notification_artwork(&mut self, toasts: &[Toast], cx: &mut Context<Self>) {
+        let keys: HashSet<_> = toasts.iter().map(|toast| toast.key).collect();
+        self.notifications.artwork.retain(|key, image| {
+            if keys.contains(key) {
+                return true;
+            }
+            if let Some(image) = image.take() {
+                cx.drop_image(image, None);
+            }
+            false
+        });
+
+        let pending: Vec<_> = toasts
+            .iter()
+            .filter(|toast| !self.notifications.artwork.contains_key(&toast.key))
+            .cloned()
+            .collect();
+        if pending.is_empty() {
+            return;
+        }
+        self.notifications
+            .artwork
+            .extend(pending.iter().map(|toast| (toast.key, None)));
+        cx.spawn(async move |this, cx| {
+            let images = cx
+                .background_executor()
+                .spawn(async move {
+                    read_artwork(&pending)
+                        .map(|images| {
+                            images
+                                .filter_map(|(key, bytes)| Some((key, render_artwork(&bytes)?)))
+                                .collect::<Vec<_>>()
+                        })
+                        .ok_or(pending)
+                })
+                .await;
+            let _ = this.update(cx, |notch, cx| match images {
+                Ok(images) => {
+                    for (key, image) in images {
+                        if let Some(slot) = notch.notifications.artwork.get_mut(&key) {
+                            *slot = Some(image);
+                            cx.notify();
+                        }
+                    }
+                }
+                Err(pending) => {
+                    for toast in pending {
+                        notch.notifications.artwork.remove(&toast.key);
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
     fn sync_notification_icons(
         &mut self,
-        apps: std::collections::HashMap<String, ::windows::ApplicationModel::AppDisplayInfo>,
+        apps: std::collections::HashMap<
+            String,
+            Option<::windows::ApplicationModel::AppDisplayInfo>,
+        >,
         cx: &mut Context<Self>,
     ) {
         self.notifications.icons.retain(|id, icon| {
@@ -269,12 +355,20 @@ impl Notch {
             }
             self.notifications.icons.insert(id.clone(), None);
             cx.spawn(async move |this, cx| {
-                let Some(bytes) = read_icon(app).await else {
-                    return;
+                let logo = match app {
+                    Some(app) => read_icon(app).await,
+                    None => None,
                 };
-                let icon = cx
+                let (id, icon) = cx
                     .background_executor()
-                    .spawn(async move { render_icon(&bytes) })
+                    .spawn(async move {
+                        let icon = logo
+                            .as_deref()
+                            .and_then(render_icon)
+                            .or_else(|| render_icon(&read_registered_icon(&id)?))
+                            .or_else(|| render_icon_pixels(&read_shell_icon(&id)?));
+                        (id, icon)
+                    })
                     .await;
                 let _ = this.update(cx, |notch, cx| {
                     if let Some(entry) = notch.notifications.icons.get_mut(&id) {
@@ -391,9 +485,12 @@ impl Render for Notch {
         if let Mode::Preview(key) = self.mode
             && let Some(toast) = self.notifications.find(key)
         {
+            let view = cx.weak_entity();
             return notch.child(
                 self.notifications
-                    .preview(toast)
+                    .preview(toast, move |key, cx| {
+                        let _ = view.update(cx, |notch, cx| notch.dismiss_notification(key, cx));
+                    })
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_notifications(cx))),
             );
         }
@@ -428,6 +525,7 @@ impl Render for Notch {
             })
             .when(self.mode == Mode::Notifications, |notch| {
                 let view = cx.weak_entity();
+                let dismiss_view = view.clone();
                 let height = self.height.min(target.1) - self.compact_size.1;
                 notch.child(self.notifications.panel(
                     height,
@@ -443,6 +541,10 @@ impl Render for Notch {
                     cx.listener(|this, _, _, cx| this.request_notification_access(cx)),
                     move |key, cx| {
                         let _ = view.update(cx, |this, cx| this.open_notification_app(key, cx));
+                    },
+                    move |key, cx| {
+                        let _ = dismiss_view
+                            .update(cx, |notch, cx| notch.dismiss_notification(key, cx));
                     },
                 ))
             })

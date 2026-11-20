@@ -1,5 +1,7 @@
-use std::{path::PathBuf, time::Duration};
-
+use super::{
+    notification_history::{EDGE_STABLE_PACKAGE, find_payload, open_history},
+    notifications::Toast,
+};
 use ::windows::{
     Win32::{
         System::{
@@ -14,11 +16,7 @@ use ::windows::{
     },
     core::{GUID, HSTRING, PCWSTR, w},
 };
-use rusqlite::{Connection, OpenFlags, params};
 
-use super::notifications::Toast;
-
-const EDGE_STABLE_PACKAGE: &str = "Microsoft.MicrosoftEdge.Stable_8wekyb3d8bbwe!";
 // Edge Stable declares this activator for its notification helper.
 const EDGE_STABLE_ACTIVATOR: GUID = GUID::from_u128(0x628ace20_b77a_456f_a88d_547db6ceedd5);
 
@@ -27,7 +25,7 @@ pub(super) fn is_edge(app_id: &str) -> bool {
 }
 
 pub(super) fn activate(toast: &Toast) -> Option<()> {
-    let (app_id, payload) = read_payload(toast)?;
+    let (app_id, payload) = find_payload(&open_history()?, toast)?;
     let xml = std::str::from_utf8(&payload).ok()?;
     let document = roxmltree::Document::parse(xml).ok()?;
     let args = launch_arguments(document.root_element(), is_edge(&app_id))?;
@@ -63,34 +61,6 @@ fn send_to_browser(app_id: &str, args: &str) -> Option<()> {
         let _ = CoAllowSetForegroundWindow(&activator, None);
         activator.Activate(&HSTRING::from(app_id), &HSTRING::from(args), &[])
     }
-    .ok()
-}
-
-fn read_payload(toast: &Toast) -> Option<(String, Vec<u8>)> {
-    // UserNotificationListener gives us the displayed content. The Windows
-    // history database also holds the original toast body activation arguments.
-    let path = PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
-        .join("Microsoft/Windows/Notifications/wpndatabase.db");
-    let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
-    db.busy_timeout(Duration::ZERO).ok()?;
-    find_payload(&db, toast)
-}
-
-fn find_payload(db: &Connection, toast: &Toast) -> Option<(String, Vec<u8>)> {
-    // The listener can return Edge's main app ID for a toast stored under a site-specific ID.
-    let edge_family = (toast.app_id == "MSEdge"
-        || toast.app_id.strip_prefix(EDGE_STABLE_PACKAGE) == Some("App"))
-    .then_some(EDGE_STABLE_PACKAGE);
-    db.query_row(
-        "SELECT h.PrimaryId, n.Payload
-         FROM Notification n
-         JOIN NotificationHandler h ON h.RecordId = n.HandlerId
-         WHERE n.Id = ?1 AND n.ArrivalTime = ?2
-           AND (h.PrimaryId = ?3 OR substr(h.PrimaryId, 1, length(?4)) = ?4)
-           AND n.Type = 'toast' AND length(n.Payload) <= 131072",
-        params![toast.key.id, toast.key.created, toast.app_id, edge_family],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )
     .ok()
 }
 
