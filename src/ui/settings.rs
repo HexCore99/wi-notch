@@ -10,6 +10,10 @@ use gpui::{prelude::*, *};
 use crate::appearance::AppearanceSettings;
 use crate::windows::window::remove_window_border;
 
+const CONTROL_BACKGROUND: u32 = 0x3a3a3c;
+const CONTROL_HOVER: u32 = 0x4a4a4d;
+const MUTED_TEXT: u32 = 0xa8a8aa;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
     General,
@@ -89,11 +93,9 @@ impl SettingsView {
             .py(px(8.0))
             .rounded_md()
             .cursor_pointer()
-            .when(selected, |item| {
-                item.bg(rgb(0x29364e)).text_color(rgb(0xcbdcff))
-            })
+            .when(selected, |item| item.bg(rgb(0x2a2a2c)))
             .when(!selected, |item| {
-                item.hover(|style| style.bg(rgb(0x212a39)))
+                item.hover(|style| style.bg(rgb(0x1e1e20)))
             })
             .child(
                 div()
@@ -125,8 +127,8 @@ impl Render for SettingsView {
             .flex()
             .rounded_xl()
             .overflow_hidden()
-            .bg(rgb(0x1b2230))
-            .text_color(rgb(0xe9eef6))
+            .bg(rgb(0x1c1c1e))
+            .text_color(rgb(0xf4f4f5))
             .text_size(px(13.0))
             .child(
                 div()
@@ -137,7 +139,7 @@ impl Render for SettingsView {
                     .gap(px(4.0))
                     .px(px(10.0))
                     .rounded_l_xl()
-                    .bg(rgb(0x121824))
+                    .bg(rgb(0x151517))
                     .child(
                         div()
                             .h(px(61.0))
@@ -158,7 +160,7 @@ impl Render for SettingsView {
                     .flex_1()
                     .flex()
                     .flex_col()
-                    .gap(px(10.0))
+                    .gap(px(6.0))
                     .px(px(22.0))
                     .child(
                         div()
@@ -184,7 +186,7 @@ impl Render for SettingsView {
                                     .items_center()
                                     .justify_center()
                                     .rounded_md()
-                                    .text_color(rgb(0xb9c5d7))
+                                    .text_color(rgb(MUTED_TEXT))
                                     .text_size(px(22.0))
                                     .cursor_pointer()
                                     .hover(|style| {
@@ -222,15 +224,40 @@ fn update_settings(
     })
 }
 
-fn setting_row(label: &'static str, control: impl IntoElement) -> Div {
+fn setting_group(title: &'static str, rows: impl IntoIterator<Item = Div>) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(4.0))
+        .child(
+            div()
+                .px(px(6.0))
+                .text_size(px(11.0))
+                .text_color(rgb(MUTED_TEXT))
+                .child(title),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .rounded_xl()
+                .overflow_hidden()
+                .bg(rgb(0x28282a))
+                .children(rows.into_iter().enumerate().map(|(index, row)| {
+                    row.when(index > 0, |row| {
+                        row.border_t_1().border_color(rgb(0x303032))
+                    })
+                })),
+        )
+}
+
+fn setting_row(label: impl IntoElement, control: impl IntoElement) -> Div {
     div()
         .h(px(44.0))
         .px(px(12.0))
         .flex()
         .items_center()
         .justify_between()
-        .rounded_md()
-        .bg(rgb(0x232c3b))
         .child(label)
         .child(control)
 }
@@ -245,9 +272,9 @@ fn setting_switch(id: &'static str, on: bool) -> Stateful<Div> {
         .items_center()
         .when(on, |toggle| toggle.justify_end())
         .rounded_full()
-        .bg(rgb(if on { 0x4f7eca } else { 0x465268 }))
+        .bg(rgb(if on { 0x30c759 } else { 0x47474a }))
         .cursor_pointer()
-        .child(div().size(px(14.0)).rounded_full().bg(rgb(0xecf3ff)))
+        .child(div().size(px(14.0)).rounded_full().bg(rgb(0xffffff)))
 }
 
 fn save_error() -> Div {

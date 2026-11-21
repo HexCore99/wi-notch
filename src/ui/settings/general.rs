@@ -1,6 +1,9 @@
 use gpui::{prelude::*, *};
 
-use super::{save_error, setting_row, setting_switch, update_settings};
+use super::{
+    CONTROL_BACKGROUND, CONTROL_HOVER, MUTED_TEXT, save_error, setting_group, setting_row,
+    setting_switch, update_settings,
+};
 use crate::appearance::{
     AppearanceSettings, MAX_IDLE_COLLAPSE_DELAY_SECS, MIN_IDLE_COLLAPSE_DELAY_SECS,
 };
@@ -36,14 +39,14 @@ impl GeneralPage {
             .items_center()
             .justify_center()
             .rounded_md()
-            .bg(rgb(0x34445d))
+            .bg(rgb(CONTROL_BACKGROUND))
             .text_size(px(17.0))
             .child(label)
             .when(!enabled, |button| button.opacity(0.4))
             .when(enabled, |button| {
                 button
                     .cursor_pointer()
-                    .hover(|style| style.bg(rgb(0x405675)))
+                    .hover(|style| style.bg(rgb(CONTROL_HOVER)))
                     .on_click(cx.listener(move |page, _, _, cx| {
                         page.update_settings(
                             |settings| {
@@ -101,22 +104,31 @@ impl Render for GeneralPage {
                 cx,
             ));
 
+        let always_label = div()
+            .flex()
+            .flex_col()
+            .child("Always minimal")
+            .when(always, |label| {
+                label.child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(rgb(MUTED_TEXT))
+                        .child("Hover over the strip to open the player."),
+                )
+            });
+
         div()
             .flex()
             .flex_col()
-            .gap(px(8.0))
-            .child(setting_row("Auto minimal notch", auto_switch))
-            .child(setting_row("Idle collapse delay", delay))
-            .child(setting_row("Always minimal", always_switch))
-            .when(always, |page| {
-                page.child(
-                    div()
-                        .px(px(12.0))
-                        .text_size(px(12.0))
-                        .text_color(rgb(0xb9c5d7))
-                        .child("Hover over the strip to open the player."),
-                )
-            })
+            .gap(px(12.0))
+            .child(setting_group(
+                "Notch",
+                [
+                    setting_row("Auto minimal notch", auto_switch),
+                    setting_row("Idle collapse delay", delay),
+                    setting_row(always_label, always_switch),
+                ],
+            ))
             .when(self.save_failed, |page| page.child(save_error()))
     }
 }

@@ -1,6 +1,8 @@
 use gpui::{prelude::*, *};
 
-use super::{save_error, setting_row, update_settings};
+use super::{
+    CONTROL_BACKGROUND, CONTROL_HOVER, save_error, setting_group, setting_row, update_settings,
+};
 use crate::appearance::AppearanceSettings;
 use crate::notch_geometry::max_top_gap;
 use crate::windows::display::{Monitor, monitors, selected_monitor};
@@ -33,14 +35,14 @@ impl DisplayPage {
             .items_center()
             .justify_center()
             .rounded_md()
-            .bg(rgb(0x34445d))
+            .bg(rgb(CONTROL_BACKGROUND))
             .text_size(px(17.0))
             .child(label)
             .when(!enabled, |button| button.opacity(0.4))
             .when(enabled, |button| {
                 button
                     .cursor_pointer()
-                    .hover(|style| style.bg(rgb(0x405675)))
+                    .hover(|style| style.bg(rgb(CONTROL_HOVER)))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.update_settings(|settings| change(settings), cx);
                     }))
@@ -95,12 +97,12 @@ impl DisplayPage {
                 .px(px(9.0))
                 .py(px(5.0))
                 .rounded_md()
-                .bg(rgb(0x34445d))
+                .bg(rgb(CONTROL_BACKGROUND))
                 .child(label)
                 .when(monitor.is_some(), |button| {
                     button
                         .cursor_pointer()
-                        .hover(|style| style.bg(rgb(0x405675)))
+                        .hover(|style| style.bg(rgb(CONTROL_HOVER)))
                         .child(if self.monitor_list_open { "▴" } else { "▾" })
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.monitor_list_open = !this.monitor_list_open;
@@ -124,11 +126,9 @@ impl DisplayPage {
             .py(px(6.0))
             .rounded_md()
             .cursor_pointer()
-            .when(selected, |item| {
-                item.bg(rgb(0x29364e)).text_color(rgb(0xcbdcff))
-            })
+            .when(selected, |item| item.bg(rgb(CONTROL_BACKGROUND)))
             .when(!selected, |item| {
-                item.hover(|style| style.bg(rgb(0x34445d)))
+                item.hover(|style| style.bg(rgb(CONTROL_HOVER)))
             })
             .child(label.into())
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -182,38 +182,42 @@ impl Render for DisplayPage {
             cx,
         );
 
+        let monitor_picker = self.monitor_picker(monitor, follow_primary, cx);
+        let monitor_options = (self.monitor_list_open && !monitors.is_empty()).then(|| {
+            div().p(px(5.0)).child(
+                div()
+                    .id("monitor-options")
+                    .max_h(px(165.0))
+                    .overflow_y_scroll()
+                    .child(Self::monitor_option(
+                        "Follow Windows primary",
+                        None,
+                        follow_primary,
+                        cx,
+                    ))
+                    .children(monitors.iter().map(|item| {
+                        Self::monitor_option(
+                            item.label(),
+                            Some(item.identity()),
+                            !follow_primary && monitor == Some(item),
+                            cx,
+                        )
+                    })),
+            )
+        });
+
         div()
             .flex()
             .flex_col()
-            .gap(px(8.0))
-            .child(setting_row("Top gap", gap))
-            .child(setting_row("Offset", offset))
-            .child(self.monitor_picker(monitor, follow_primary, cx))
-            .when(self.monitor_list_open && !monitors.is_empty(), |page| {
-                page.child(
-                    div()
-                        .id("monitor-options")
-                        .max_h(px(165.0))
-                        .overflow_y_scroll()
-                        .p(px(5.0))
-                        .rounded_md()
-                        .bg(rgb(0x232c3b))
-                        .child(Self::monitor_option(
-                            "Follow Windows primary",
-                            None,
-                            follow_primary,
-                            cx,
-                        ))
-                        .children(monitors.iter().map(|item| {
-                            Self::monitor_option(
-                                item.label(),
-                                Some(item.identity()),
-                                !follow_primary && monitor == Some(item),
-                                cx,
-                            )
-                        })),
-                )
-            })
+            .gap(px(12.0))
+            .child(setting_group(
+                "Position",
+                [setting_row("Top gap", gap), setting_row("Offset", offset)],
+            ))
+            .child(setting_group(
+                "Display selection",
+                std::iter::once(monitor_picker).chain(monitor_options),
+            ))
             .when(self.save_failed, |page| page.child(save_error()))
     }
 }

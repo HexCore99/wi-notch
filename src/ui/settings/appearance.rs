@@ -1,6 +1,6 @@
 use gpui::{prelude::*, *};
 
-use super::{save_error, setting_row, setting_switch, update_settings};
+use super::{save_error, setting_group, setting_row, setting_switch, update_settings};
 use crate::appearance::{AppearanceSettings, Background, Corners};
 
 pub(super) struct AppearancePage {
@@ -27,7 +27,7 @@ impl AppearancePage {
             .size(px(26.0))
             .bg(rgb(color.color()))
             .border_2()
-            .border_color(rgb(if color == current { 0x9bbcff } else { 0x515e73 }))
+            .border_color(rgb(if color == current { 0xe4e4e6 } else { 0x656568 }))
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.update_settings(|settings| settings.background = color, cx);
@@ -79,9 +79,14 @@ impl Render for AppearancePage {
         div()
             .flex()
             .flex_col()
-            .gap(px(8.0))
-            .child(setting_row("Background", background))
-            .child(setting_row("Corner rounding", corners))
+            .gap(px(12.0))
+            .child(setting_group(
+                "Notch style",
+                [
+                    setting_row("Background", background),
+                    setting_row("Corner rounding", corners),
+                ],
+            ))
             .when(self.save_failed, |page| page.child(save_error()))
     }
 }
