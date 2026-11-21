@@ -21,6 +21,8 @@ use crate::windows::notifications::{
 use chrono::Local;
 use gpui::{prelude::*, *};
 
+const DATE_REVEAL_SECONDS: f32 = 0.38;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Compact,
@@ -42,6 +44,8 @@ pub struct Notch {
     mode: Mode,
     target_size: (f32, f32),
     animation: Option<SizeAnimation>,
+    date_reveal: f32,
+    date_reveal_frame: Option<Instant>,
     displays: Vec<Monitor>,
     _placement_watch: Task<()>,
     _playback_watch: Task<()>,
@@ -151,6 +155,8 @@ impl Notch {
             mode,
             target_size: (width, height),
             animation: None,
+            date_reveal: 0.0,
+            date_reveal_frame: None,
             displays: monitors(),
             _placement_watch: placement_watch,
             _playback_watch: playback_watch,
@@ -555,8 +561,6 @@ impl Render for Notch {
 
             if finished {
                 self.animation = None;
-            } else {
-                window.request_animation_frame();
             }
         }
 
@@ -564,7 +568,21 @@ impl Render for Notch {
             / (EXPANDED_SIZE.0 - self.compact_size.0))
             .clamp(0.0, 1.0);
 
-        let date_opacity = ((expansion - 0.25) / 0.55).clamp(0.0, 1.0);
+        // Let the date reveal gradually even when the window width grows quickly.
+        let date_limit = ((expansion - 0.25) / 0.70).clamp(0.0, 1.0);
+        if target.0 > self.compact_size.0 && self.date_reveal < date_limit {
+            let now = Instant::now();
+            let previous_frame = self.date_reveal_frame.replace(now).unwrap_or(now);
+            let progress = (now - previous_frame).as_secs_f32() / DATE_REVEAL_SECONDS;
+            self.date_reveal = (self.date_reveal + progress).min(date_limit);
+        } else {
+            self.date_reveal_frame = None;
+            self.date_reveal = self.date_reveal.min(date_limit);
+        }
+        if self.animation.is_some() || self.date_reveal_frame.is_some() {
+            window.request_animation_frame();
+        }
+        let date_opacity = self.date_reveal;
         let player_opacity = ((expansion - 0.6) / 0.35).clamp(0.0, 1.0);
 
         let notch = div()
