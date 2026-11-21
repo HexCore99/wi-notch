@@ -117,6 +117,7 @@ pub fn place_notch(
     cx: &gpui::App,
     width: f32,
     height: f32,
+    horizontal_offset: f32,
     top_gap: u32,
     monitor: &Monitor,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -164,7 +165,7 @@ pub fn place_notch(
     // SetWindowPos moves the outer window. Offset it to place the visible client area.
     let inset_x = ((client_origin.x - outer.left) as f32 * scale_ratio).round() as i32;
     let inset_y = ((client_origin.y - outer.top) as f32 * scale_ratio).round() as i32;
-    let x = (f32::from(origin.x) * scale).round() as i32 - inset_x;
+    let x = ((f32::from(origin.x) + horizontal_offset) * scale).round() as i32 - inset_x;
     let y = (f32::from(origin.y) * scale).round() as i32 - inset_y;
 
     // Windows can move or hide the HWND even when the saved position hasn't changed.

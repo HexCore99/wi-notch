@@ -9,10 +9,12 @@ use super::notifications::{
     Notifications, PREVIEW_HEIGHT, render_artwork, render_icon, render_icon_pixels,
 };
 use super::settings::SettingsView;
+use super::volume::{VOLUME_HUD_SIZE, VolumeFeedback, volume_bar};
 use crate::appearance::{AppearanceSettings, Corners};
 use crate::notch_geometry::{COLLAPSED_SIZE, EXPANDED_SIZE};
 use crate::ui::clock::Clock;
 use crate::windows::app_icons::{read_registered_icon, read_shell_icon};
+use crate::windows::audio::{VolumeKeyWatch, read_default_output};
 use crate::windows::display::{Monitor, monitors, selected_monitor};
 use crate::windows::media::SessionManager;
 use crate::windows::notifications::{
@@ -46,15 +48,19 @@ pub struct Notch {
     animation: Option<SizeAnimation>,
     date_reveal: f32,
     date_reveal_frame: Option<Instant>,
+    volume_stretch: f32,
     displays: Vec<Monitor>,
     _placement_watch: Task<()>,
     _playback_watch: Task<()>,
+    _volume_watch: Task<()>,
     _notification_watch: Option<Task<()>>,
     preview_timeout: Option<Task<()>>,
     opening_notification: bool,
 
     clock: Entity<Clock>,
     music_player: Entity<MusicPlayer>,
+    volume_feedback: VolumeFeedback,
+    volume_keys: Option<VolumeKeyWatch>,
     notifications: Notifications,
     appearance: Entity<AppearanceSettings>,
     settings_window: Option<WindowHandle<SettingsView>>,
@@ -116,6 +122,31 @@ impl Notch {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
             }
         });
+        let volume_watch = cx.spawn(async move |this, cx| {
+            let executor = cx.background_executor().clone();
+            loop {
+                let reading = executor.spawn(async { read_default_output() }).await;
+                if this
+                    .update(cx, |notch, cx| {
+                        let presses = notch
+                            .volume_keys
+                            .as_ref()
+                            .map(VolumeKeyWatch::take_presses)
+                            .unwrap_or_default();
+                        if notch
+                            .volume_feedback
+                            .update(reading, Instant::now(), presses)
+                        {
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+                executor.timer(Duration::from_millis(125)).await;
+            }
+        });
         let listener = Listener::connect();
         let access = listener
             .as_ref()
@@ -157,15 +188,21 @@ impl Notch {
             animation: None,
             date_reveal: 0.0,
             date_reveal_frame: None,
+            volume_stretch: 0.0,
             displays: monitors(),
             _placement_watch: placement_watch,
             _playback_watch: playback_watch,
+            _volume_watch: volume_watch,
             _notification_watch: notification_watch,
             preview_timeout: None,
             opening_notification: false,
 
             clock: cx.new(Clock::new),
             music_player: cx.new(|_| MusicPlayer::default()),
+            volume_feedback: VolumeFeedback::default(),
+            volume_keys: VolumeKeyWatch::start()
+                .inspect_err(|error| eprintln!("Failed to watch volume keys: {error}"))
+                .ok(),
             notifications: Notifications::new(access),
             appearance,
             settings_window: None,
@@ -484,8 +521,9 @@ impl Notch {
             && let Err(error) = crate::windows::window::place_notch(
                 window,
                 cx,
-                self.width,
+                self.width + self.volume_stretch.abs(),
                 self.height,
+                self.volume_stretch / 2.0,
                 settings.top_gap,
                 monitor,
             )
@@ -515,7 +553,20 @@ impl Notch {
 
 impl Render for Notch {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let hovered = window.is_window_hovered();
+        let resting_size = match self.mode {
+            Mode::Compact => Some(self.compact_size),
+            Mode::Collapsed => Some(COLLAPSED_SIZE),
+            _ => None,
+        };
+        let hovered = window.is_window_hovered()
+            && resting_size.is_none_or(|(width, height)| {
+                // Expanding the volume bar under the pointer should leave the player closed.
+                let inset = ((f32::from(window.bounds().size.width) - width - self.volume_stretch)
+                    / 2.0)
+                    .max(0.0);
+                Bounds::new(point(px(inset), px(0.0)), size(px(width), px(height)))
+                    .contains(&window.mouse_position())
+            });
         if self.hovered != hovered {
             self.hovered = hovered;
             match self.mode {
@@ -536,40 +587,55 @@ impl Render for Notch {
         let screen_height = window.display(cx).map_or(f32::INFINITY, |display| {
             f32::from(display.bounds().size.height)
         });
-        let target = match self.mode {
-            Mode::Compact => self.compact_size,
-            Mode::Collapsed => COLLAPSED_SIZE,
-            Mode::Music => EXPANDED_SIZE,
-            Mode::Notifications => (
-                EXPANDED_SIZE.0,
-                self.compact_size.1 + self.notifications.list_height(),
-            ),
-            Mode::Preview(_) => (EXPANDED_SIZE.0, PREVIEW_HEIGHT),
+        let volume = self.volume_feedback.frame(Instant::now());
+        let volume_hud = volume.filter(|_| resting_size.is_some());
+        let target = if volume_hud.is_some() {
+            VOLUME_HUD_SIZE
+        } else {
+            match self.mode {
+                Mode::Compact => self.compact_size,
+                Mode::Collapsed => COLLAPSED_SIZE,
+                Mode::Music => EXPANDED_SIZE,
+                Mode::Notifications => (
+                    EXPANDED_SIZE.0,
+                    self.compact_size.1 + self.notifications.list_height(),
+                ),
+                Mode::Preview(_) => (EXPANDED_SIZE.0, PREVIEW_HEIGHT),
+            }
         };
         let target = (target.0, target.1.min(screen_height));
         if target != self.target_size {
             self.target_size = target;
             self.animation = Some(SizeAnimation::new((self.width, self.height), target));
         }
+        let resizing = self.animation.is_some();
         if let Some(animation) = &self.animation {
             let (width, height, finished) = animation.sample();
             let (min_width, min_height) = animation.min_size();
             self.width = width.max(self.compact_size.0.min(min_width));
             let min_height = self.compact_size.1.min(min_height).min(screen_height);
             self.height = height.clamp(min_height, screen_height);
-            self.sync_placement(window, cx);
-
             if finished {
                 self.animation = None;
             }
         }
+        let volume_stretch = volume_hud.map_or(0.0, |frame| frame.stretch);
+        if resizing || self.volume_stretch != volume_stretch {
+            self.volume_stretch = volume_stretch;
+            self.sync_placement(window, cx);
+        }
+        let width = self.width + self.volume_stretch.abs();
 
         let expansion = ((self.width - self.compact_size.0)
             / (EXPANDED_SIZE.0 - self.compact_size.0))
             .clamp(0.0, 1.0);
 
         // Let the date reveal gradually even when the window width grows quickly.
-        let date_limit = ((expansion - 0.25) / 0.70).clamp(0.0, 1.0);
+        let date_limit = if volume_hud.is_some() {
+            0.0
+        } else {
+            ((expansion - 0.25) / 0.70).clamp(0.0, 1.0)
+        };
         if target.0 > self.compact_size.0 && self.date_reveal < date_limit {
             let now = Instant::now();
             let previous_frame = self.date_reveal_frame.replace(now).unwrap_or(now);
@@ -579,7 +645,10 @@ impl Render for Notch {
             self.date_reveal_frame = None;
             self.date_reveal = self.date_reveal.min(date_limit);
         }
-        if self.animation.is_some() || self.date_reveal_frame.is_some() {
+        if self.animation.is_some()
+            || self.date_reveal_frame.is_some()
+            || volume.is_some_and(|frame| frame.animating)
+        {
             window.request_animation_frame();
         }
         let date_opacity = self.date_reveal;
@@ -587,7 +656,7 @@ impl Render for Notch {
 
         let notch = div()
             .id("notch")
-            .w(px(self.width))
+            .w(px(width))
             .h(px(self.height))
             .relative()
             .flex()
@@ -598,6 +667,15 @@ impl Render for Notch {
             .when(rounded, |notch| notch.rounded_xl())
             .text_color(rgb(0xffffff))
             .font_weight(FontWeight(600.0));
+
+        if let Some(volume) = volume_hud {
+            let opacity = ((self.height - COLLAPSED_SIZE.1) / 22.0).clamp(0.0, 1.0);
+            return notch.justify_center().child(
+                volume_bar(volume)
+                    .w(px((width - 30.0).max(0.0)))
+                    .opacity(opacity),
+            );
+        }
 
         if self.mode == Mode::Collapsed {
             return notch;
@@ -616,27 +694,38 @@ impl Render for Notch {
             );
         }
 
-        notch
-            .child(
-                div()
-                    .h(px(self.compact_size.1))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0 * date_opacity))
-                    .when(date_opacity > 0.0, |header| {
-                        header.child(
-                            div()
-                                .w(px(104.0 * date_opacity))
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .opacity(date_opacity)
-                                .text_size(px(12.0))
-                                .child(Local::now().format("%a %d %b %Y").to_string()),
-                        )
-                    })
-                    .child(self.clock.clone()),
+        let header = div()
+            .h(px(self.compact_size.1))
+            .flex_none()
+            .flex()
+            .items_center();
+        let header = if let Some(volume) = volume {
+            let available_width = (self.width - 88.0).clamp(0.0, 226.0);
+            header.child(
+                volume_bar(volume)
+                    .w(px(available_width + volume.stretch.abs()))
+                    .relative()
+                    .left(px(volume.stretch / 2.0)),
             )
+        } else {
+            header
+                .gap(px(8.0 * date_opacity))
+                .when(date_opacity > 0.0, |header| {
+                    header.child(
+                        div()
+                            .w(px(104.0 * date_opacity))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .opacity(date_opacity)
+                            .text_size(px(12.0))
+                            .child(Local::now().format("%a %d %b %Y").to_string()),
+                    )
+                })
+                .child(self.clock.clone())
+        };
+
+        notch
+            .child(header)
             .when(self.mode == Mode::Music && player_opacity > 0.0, |notch| {
                 notch.child(
                     div()
