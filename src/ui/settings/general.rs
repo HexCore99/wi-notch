@@ -114,7 +114,7 @@ impl Render for GeneralPage {
                         .px(px(12.0))
                         .text_size(px(12.0))
                         .text_color(rgb(0xb9c5d7))
-                        .child("Click the notch to reopen Settings."),
+                        .child("Hover over the strip to open the player."),
                 )
             })
             .when(self.save_failed, |page| page.child(save_error()))

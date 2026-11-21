@@ -172,14 +172,16 @@ impl Notch {
     fn hover_mode(&self) -> Mode {
         if self.hovered {
             Mode::Music
+        } else if self.always_minimal {
+            Mode::Collapsed
         } else {
             Mode::Compact
         }
     }
 
     fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
-        let mode = if self.always_minimal {
-            Mode::Collapsed
+        let mode = if self.always_minimal && !(self.hovered && mode == Mode::Notifications) {
+            self.hover_mode()
         } else {
             mode
         };
@@ -219,7 +221,8 @@ impl Notch {
         let delay = Duration::from_secs(settings.idle_collapse_seconds().into());
 
         if self.always_minimal {
-            self.set_mode(Mode::Collapsed, cx);
+            // Apply the preference to the current panel, including when it changes in Settings.
+            self.set_mode(self.mode, cx);
             return;
         }
 
@@ -510,10 +513,12 @@ impl Render for Notch {
         if self.hovered != hovered {
             self.hovered = hovered;
             match self.mode {
-                Mode::Compact | Mode::Collapsed if hovered && !self.always_minimal => {
+                Mode::Compact | Mode::Collapsed if hovered => {
                     self.set_mode(Mode::Music, cx);
                 }
-                Mode::Music | Mode::Notifications if !hovered => self.set_mode(Mode::Compact, cx),
+                Mode::Music | Mode::Notifications if !hovered => {
+                    self.set_mode(self.hover_mode(), cx);
+                }
                 _ => {}
             }
             self.update_idle_start(cx);
@@ -577,11 +582,7 @@ impl Render for Notch {
             .font_weight(FontWeight(600.0));
 
         if self.mode == Mode::Collapsed {
-            return notch.when(self.always_minimal, |notch| {
-                notch
-                    .cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| this.open_settings(cx)))
-            });
+            return notch;
         }
 
         if let Mode::Preview(key) = self.mode
