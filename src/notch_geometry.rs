@@ -1,6 +1,7 @@
 use gpui::{Bounds, Pixels, Point, point, px};
 
 pub const EXPANDED_SIZE: (f32, f32) = (340.0, 162.0);
+pub const COLLAPSED_SIZE: (f32, f32) = (64.0, 8.0);
 
 pub fn max_top_gap(screen_height: Pixels) -> u32 {
     // Leave room for the size animation to overshoot the expanded height.

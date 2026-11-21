@@ -15,6 +15,14 @@ impl SessionManager {
         let manager = WindowsSessionManager::RequestAsync().ok()?.await.ok()?;
         Some(Self(manager))
     }
+
+    pub fn is_playing(&self) -> bool {
+        self.0
+            .GetCurrentSession()
+            .and_then(|session| session.GetPlaybackInfo())
+            .and_then(|playback| playback.PlaybackStatus())
+            .is_ok_and(|status| status == PlaybackStatus::Playing)
+    }
 }
 
 #[derive(Clone, Copy)]

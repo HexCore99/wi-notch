@@ -1,8 +1,10 @@
 mod appearance;
 mod display;
+mod general;
 
 use appearance::AppearancePage;
 use display::DisplayPage;
+use general::GeneralPage;
 use gpui::{prelude::*, *};
 
 use crate::appearance::AppearanceSettings;
@@ -10,6 +12,7 @@ use crate::windows::window::remove_window_border;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
+    General,
     Appearance,
     Display,
 }
@@ -17,6 +20,7 @@ enum Page {
 impl Page {
     fn title(self) -> &'static str {
         match self {
+            Self::General => "General",
             Self::Appearance => "Appearance",
             Self::Display => "Display",
         }
@@ -25,6 +29,7 @@ impl Page {
 
 pub struct SettingsView {
     page: Page,
+    general_page: Entity<GeneralPage>,
     appearance_page: Entity<AppearancePage>,
     display_page: Entity<DisplayPage>,
 }
@@ -51,7 +56,8 @@ impl SettingsView {
                     eprintln!("Failed to remove the Settings window border: {error}");
                 }
                 cx.new(|cx| Self {
-                    page: Page::Appearance,
+                    page: Page::General,
+                    general_page: cx.new(|_| GeneralPage::new(appearance.clone())),
                     appearance_page: cx.new(|_| AppearancePage::new(appearance.clone())),
                     display_page: cx.new(|_| DisplayPage::new(appearance)),
                 })
@@ -62,8 +68,17 @@ impl SettingsView {
     fn sidebar_item(&self, page: Page, cx: &Context<Self>) -> Stateful<Div> {
         let selected = self.page == page;
         let (icon, badge_color) = match page {
-            Page::Appearance => ("circle-half.svg", rgb(0x56627a)),
-            Page::Display => ("display-fill.svg", rgb(0x5454d4)),
+            Page::General => (
+                div()
+                    .font_family("Segoe UI Symbol")
+                    .text_size(px(14.0))
+                    .text_color(rgb(0xffffff))
+                    .child("⚙")
+                    .into_any_element(),
+                rgb(0x4f7eca),
+            ),
+            Page::Appearance => (sidebar_icon("circle-half.svg"), rgb(0x56627a)),
+            Page::Display => (sidebar_icon("display-fill.svg"), rgb(0x5454d4)),
         };
         div()
             .id(page.title())
@@ -88,7 +103,7 @@ impl SettingsView {
                     .justify_center()
                     .rounded_md()
                     .bg(badge_color)
-                    .child(svg().path(icon).size(px(12.0)).text_color(rgb(0xffffff))),
+                    .child(icon),
             )
             .child(page.title())
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -101,6 +116,7 @@ impl SettingsView {
 impl Render for SettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = match self.page {
+            Page::General => self.general_page.clone().into_any_element(),
             Page::Appearance => self.appearance_page.clone().into_any_element(),
             Page::Display => self.display_page.clone().into_any_element(),
         };
@@ -133,6 +149,7 @@ impl Render for SettingsView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("Settings"),
                     )
+                    .child(self.sidebar_item(Page::General, cx))
                     .child(self.sidebar_item(Page::Appearance, cx))
                     .child(self.sidebar_item(Page::Display, cx)),
             )
@@ -182,6 +199,14 @@ impl Render for SettingsView {
     }
 }
 
+fn sidebar_icon(path: &'static str) -> AnyElement {
+    svg()
+        .path(path)
+        .size(px(12.0))
+        .text_color(rgb(0xffffff))
+        .into_any_element()
+}
+
 fn update_settings(
     appearance: &Entity<AppearanceSettings>,
     change: impl FnOnce(&mut AppearanceSettings),
@@ -208,6 +233,21 @@ fn setting_row(label: &'static str, control: impl IntoElement) -> Div {
         .bg(rgb(0x232c3b))
         .child(label)
         .child(control)
+}
+
+fn setting_switch(id: &'static str, on: bool) -> Stateful<Div> {
+    div()
+        .id(id)
+        .w(px(34.0))
+        .h(px(20.0))
+        .px(px(3.0))
+        .flex()
+        .items_center()
+        .when(on, |toggle| toggle.justify_end())
+        .rounded_full()
+        .bg(rgb(if on { 0x4f7eca } else { 0x465268 }))
+        .cursor_pointer()
+        .child(div().size(px(14.0)).rounded_full().bg(rgb(0xecf3ff)))
 }
 
 fn save_error() -> Div {

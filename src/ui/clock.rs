@@ -10,6 +10,7 @@ pub struct Clock {
 impl Clock {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let task = cx.spawn(async move |this, cx| {
+            
             loop {
                 let now = Local::now();
                 let remaining = Duration::from_secs(60 - now.second() as u64)
