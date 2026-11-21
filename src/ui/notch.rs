@@ -1,4 +1,7 @@
-use std::{collections::HashSet, time::Duration};
+use std::{
+    collections::HashSet,
+    time::{Duration, Instant},
+};
 
 use super::animation::SizeAnimation;
 use super::music_player::MusicPlayer;
@@ -7,19 +10,23 @@ use super::notifications::{
 };
 use super::settings::SettingsView;
 use crate::appearance::{AppearanceSettings, Corners};
-use crate::notch_geometry::EXPANDED_SIZE;
+use crate::notch_geometry::{COLLAPSED_SIZE, EXPANDED_SIZE};
 use crate::ui::clock::Clock;
 use crate::windows::app_icons::{read_registered_icon, read_shell_icon};
 use crate::windows::display::{Monitor, monitors, selected_monitor};
+use crate::windows::media::SessionManager;
 use crate::windows::notifications::{
     Access, Listener, Snapshot, Toast, ToastKey, open_notification, read_artwork, read_icon,
 };
 use chrono::Local;
 use gpui::{prelude::*, *};
 
+const DATE_REVEAL_SECONDS: f32 = 0.38;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Compact,
+    Collapsed,
     Music,
     Notifications,
     Preview(ToastKey),
@@ -31,11 +38,17 @@ pub struct Notch {
 
     compact_size: (f32, f32),
     hovered: bool,
+    playing: bool,
+    always_minimal: bool,
+    idle_since: Option<Instant>,
     mode: Mode,
     target_size: (f32, f32),
     animation: Option<SizeAnimation>,
+    date_reveal: f32,
+    date_reveal_frame: Option<Instant>,
     displays: Vec<Monitor>,
     _placement_watch: Task<()>,
+    _playback_watch: Task<()>,
     _notification_watch: Option<Task<()>>,
     preview_timeout: Option<Task<()>>,
     opening_notification: bool,
@@ -56,6 +69,7 @@ impl Notch {
         cx: &mut Context<Self>,
     ) -> Self {
         cx.observe_in(&appearance, window, |this, _, window, cx| {
+            this.sync_idle_policy(cx);
             this.sync_placement(window, cx);
             cx.notify();
         })
@@ -83,6 +97,25 @@ impl Notch {
                 }
             }
         });
+        let playback_watch = cx.spawn(async move |this, cx| {
+            let mut manager = None;
+            loop {
+                if manager.is_none() {
+                    manager = SessionManager::connect().await;
+                }
+                let playing = manager.as_ref().is_some_and(SessionManager::is_playing);
+                if this
+                    .update(cx, |notch, cx| {
+                        notch.playing = playing;
+                        notch.sync_idle_policy(cx);
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+            }
+        });
         let listener = Listener::connect();
         let access = listener
             .as_ref()
@@ -104,16 +137,29 @@ impl Notch {
                 }
             })
         });
-        let notch = Self {
+        let always_minimal = appearance.read(cx).always_minimal;
+        let compact_size = (width, height);
+        let (mode, (width, height)) = if always_minimal {
+            (Mode::Collapsed, COLLAPSED_SIZE)
+        } else {
+            (Mode::Compact, compact_size)
+        };
+        let mut notch = Self {
             width,
             height,
-            compact_size: (width, height),
+            compact_size,
             hovered: false,
-            mode: Mode::Compact,
+            playing: false,
+            always_minimal,
+            idle_since: None,
+            mode,
             target_size: (width, height),
             animation: None,
+            date_reveal: 0.0,
+            date_reveal_frame: None,
             displays: monitors(),
             _placement_watch: placement_watch,
+            _playback_watch: playback_watch,
             _notification_watch: notification_watch,
             preview_timeout: None,
             opening_notification: false,
@@ -124,6 +170,7 @@ impl Notch {
             appearance,
             settings_window: None,
         };
+        notch.update_idle_start(cx);
         notch.sync_placement(window, cx);
         notch
     }
@@ -131,12 +178,19 @@ impl Notch {
     fn hover_mode(&self) -> Mode {
         if self.hovered {
             Mode::Music
+        } else if self.always_minimal {
+            Mode::Collapsed
         } else {
             Mode::Compact
         }
     }
 
     fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
+        let mode = if self.always_minimal && !(self.hovered && mode == Mode::Notifications) {
+            self.hover_mode()
+        } else {
+            mode
+        };
         if self.mode == mode {
             return;
         }
@@ -149,7 +203,46 @@ impl Notch {
         if !matches!(mode, Mode::Preview(_)) {
             self.preview_timeout = None;
         }
+        self.update_idle_start(cx);
         cx.notify();
+    }
+
+    fn update_idle_start(&mut self, cx: &App) {
+        if self.mode == Mode::Compact
+            && !self.hovered
+            && !self.playing
+            && self.appearance.read(cx).auto_minimal
+        {
+            self.idle_since.get_or_insert_with(Instant::now);
+        } else {
+            self.idle_since = None;
+        }
+    }
+
+    fn sync_idle_policy(&mut self, cx: &mut Context<Self>) {
+        let settings = self.appearance.read(cx);
+        let was_always_minimal = self.always_minimal;
+        self.always_minimal = settings.always_minimal;
+        let auto_minimal = settings.auto_minimal;
+        let delay = Duration::from_secs(settings.idle_collapse_seconds().into());
+
+        if self.always_minimal {
+            // Apply the preference to the current panel, including when it changes in Settings.
+            self.set_mode(self.mode, cx);
+            return;
+        }
+
+        if self.mode == Mode::Collapsed && (was_always_minimal || !auto_minimal || self.playing) {
+            self.set_mode(self.hover_mode(), cx);
+        }
+
+        self.update_idle_start(cx);
+        if self
+            .idle_since
+            .is_some_and(|since| since.elapsed() >= delay)
+        {
+            self.set_mode(Mode::Collapsed, cx);
+        }
     }
 
     fn toggle_notifications(&mut self, cx: &mut Context<Self>) {
@@ -249,7 +342,11 @@ impl Notch {
             self.sync_notification_icons(snapshot.apps, cx);
 
             if let Some(key) = newest
-                && matches!(self.mode, Mode::Compact | Mode::Preview(_))
+                && !self.always_minimal
+                && matches!(
+                    self.mode,
+                    Mode::Compact | Mode::Collapsed | Mode::Preview(_)
+                )
             {
                 self.set_mode(Mode::Preview(key), cx);
                 self.preview_timeout = Some(cx.spawn(async move |this, cx| {
@@ -422,10 +519,15 @@ impl Render for Notch {
         if self.hovered != hovered {
             self.hovered = hovered;
             match self.mode {
-                Mode::Compact if hovered => self.set_mode(Mode::Music, cx),
-                Mode::Music | Mode::Notifications if !hovered => self.set_mode(Mode::Compact, cx),
+                Mode::Compact | Mode::Collapsed if hovered => {
+                    self.set_mode(Mode::Music, cx);
+                }
+                Mode::Music | Mode::Notifications if !hovered => {
+                    self.set_mode(self.hover_mode(), cx);
+                }
                 _ => {}
             }
+            self.update_idle_start(cx);
         }
 
         let settings = self.appearance.read(cx);
@@ -436,6 +538,7 @@ impl Render for Notch {
         });
         let target = match self.mode {
             Mode::Compact => self.compact_size,
+            Mode::Collapsed => COLLAPSED_SIZE,
             Mode::Music => EXPANDED_SIZE,
             Mode::Notifications => (
                 EXPANDED_SIZE.0,
@@ -450,14 +553,14 @@ impl Render for Notch {
         }
         if let Some(animation) = &self.animation {
             let (width, height, finished) = animation.sample();
-            self.width = width.max(self.compact_size.0);
-            self.height = height.clamp(self.compact_size.1.min(screen_height), screen_height);
+            let (min_width, min_height) = animation.min_size();
+            self.width = width.max(self.compact_size.0.min(min_width));
+            let min_height = self.compact_size.1.min(min_height).min(screen_height);
+            self.height = height.clamp(min_height, screen_height);
             self.sync_placement(window, cx);
 
             if finished {
                 self.animation = None;
-            } else {
-                window.request_animation_frame();
             }
         }
 
@@ -465,7 +568,21 @@ impl Render for Notch {
             / (EXPANDED_SIZE.0 - self.compact_size.0))
             .clamp(0.0, 1.0);
 
-        let date_opacity = ((expansion - 0.25) / 0.55).clamp(0.0, 1.0);
+        // Let the date reveal gradually even when the window width grows quickly.
+        let date_limit = ((expansion - 0.25) / 0.70).clamp(0.0, 1.0);
+        if target.0 > self.compact_size.0 && self.date_reveal < date_limit {
+            let now = Instant::now();
+            let previous_frame = self.date_reveal_frame.replace(now).unwrap_or(now);
+            let progress = (now - previous_frame).as_secs_f32() / DATE_REVEAL_SECONDS;
+            self.date_reveal = (self.date_reveal + progress).min(date_limit);
+        } else {
+            self.date_reveal_frame = None;
+            self.date_reveal = self.date_reveal.min(date_limit);
+        }
+        if self.animation.is_some() || self.date_reveal_frame.is_some() {
+            window.request_animation_frame();
+        }
+        let date_opacity = self.date_reveal;
         let player_opacity = ((expansion - 0.6) / 0.35).clamp(0.0, 1.0);
 
         let notch = div()
@@ -481,6 +598,10 @@ impl Render for Notch {
             .when(rounded, |notch| notch.rounded_xl())
             .text_color(rgb(0xffffff))
             .font_weight(FontWeight(600.0));
+
+        if self.mode == Mode::Collapsed {
+            return notch;
+        }
 
         if let Mode::Preview(key) = self.mode
             && let Some(toast) = self.notifications.find(key)

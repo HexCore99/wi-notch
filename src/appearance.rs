@@ -6,6 +6,9 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+pub const MIN_IDLE_COLLAPSE_DELAY_SECS: u32 = 5;
+pub const MAX_IDLE_COLLAPSE_DELAY_SECS: u32 = 300;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Background {
@@ -39,6 +42,9 @@ pub struct AppearanceSettings {
     pub top_gap: u32,
     pub offset: u32,
     pub monitor: Option<String>,
+    pub auto_minimal: bool,
+    pub always_minimal: bool,
+    pub idle_collapse_delay_secs: u32,
 }
 
 impl Default for AppearanceSettings {
@@ -49,11 +55,19 @@ impl Default for AppearanceSettings {
             top_gap: 0,
             offset: 5,
             monitor: None,
+            auto_minimal: false,
+            always_minimal: false,
+            idle_collapse_delay_secs: 20,
         }
     }
 }
 
 impl AppearanceSettings {
+    pub fn idle_collapse_seconds(&self) -> u32 {
+        self.idle_collapse_delay_secs
+            .clamp(MIN_IDLE_COLLAPSE_DELAY_SECS, MAX_IDLE_COLLAPSE_DELAY_SECS)
+    }
+
     pub fn load() -> Self {
         settings_directory()
             .as_deref()
@@ -107,6 +121,9 @@ mod tests {
             top_gap: 0,
             offset: 5,
             monitor: None,
+            auto_minimal: false,
+            always_minimal: false,
+            idle_collapse_delay_secs: 20,
         };
 
         assert_eq!(AppearanceSettings::load_from(directory.path()), defaults);
@@ -116,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn older_settings_get_the_default_gap() -> io::Result<()> {
+    fn older_settings_get_the_new_defaults() -> io::Result<()> {
         let directory = tempfile::tempdir()?;
         fs::write(
             directory.path().join("settings.json"),
@@ -129,6 +146,9 @@ mod tests {
         assert_eq!(settings.top_gap, 0);
         assert_eq!(settings.offset, 5);
         assert_eq!(settings.monitor, None);
+        assert!(!settings.auto_minimal);
+        assert!(!settings.always_minimal);
+        assert_eq!(settings.idle_collapse_seconds(), 20);
         Ok(())
     }
 
@@ -150,6 +170,9 @@ mod tests {
             top_gap: 125,
             offset: 15,
             monitor: Some("DISPLAY2".into()),
+            auto_minimal: true,
+            always_minimal: true,
+            idle_collapse_delay_secs: 45,
         };
 
         settings.save_to(&directory)?;

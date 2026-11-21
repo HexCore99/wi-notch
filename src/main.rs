@@ -7,7 +7,7 @@ mod windows;
 
 use appearance::AppearanceSettings;
 use gpui::{prelude::*, *};
-use notch_geometry::notch_origin;
+use notch_geometry::{COLLAPSED_SIZE, notch_origin};
 use ui::notch::Notch;
 use windows::display::{monitors, selected_monitor};
 
@@ -35,8 +35,13 @@ fn main() {
             .into_iter()
             .find(|display| u32::from(display.id()) == monitor.index)
             .map(|display| display.id());
-        let origin = notch_origin(monitor.bounds, px(width), settings.top_gap);
-        let bounds = Bounds::new(origin, size(px(width), px(height)));
+        let (initial_width, initial_height) = if settings.always_minimal {
+            COLLAPSED_SIZE
+        } else {
+            (width, height)
+        };
+        let origin = notch_origin(monitor.bounds, px(initial_width), settings.top_gap);
+        let bounds = Bounds::new(origin, size(px(initial_width), px(initial_height)));
         let appearance = cx.new(|_| settings);
 
         cx.open_window(

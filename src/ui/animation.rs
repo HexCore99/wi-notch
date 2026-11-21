@@ -15,6 +15,10 @@ impl SizeAnimation {
         }
     }
 
+    pub fn min_size(&self) -> (f32, f32) {
+        (self.from.0.min(self.to.0), self.from.1.min(self.to.1))
+    }
+
     pub fn sample(&self) -> (f32, f32, bool) {
         let progress = (self.start_time.elapsed().as_secs_f32() / 0.520).min(1.0);
 

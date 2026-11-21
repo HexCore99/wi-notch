@@ -1,6 +1,6 @@
 use gpui::{prelude::*, *};
 
-use super::{save_error, setting_row, update_settings};
+use super::{save_error, setting_row, setting_switch, update_settings};
 use crate::appearance::{AppearanceSettings, Background, Corners};
 
 pub(super) struct AppearancePage {
@@ -63,19 +63,8 @@ impl Render for AppearancePage {
                 appearance.background,
                 cx,
             ));
-        let corners = div()
-            .id("corner-rounding")
-            .w(px(34.0))
-            .h(px(20.0))
-            .px(px(3.0))
-            .flex()
-            .items_center()
-            .when(rounded, |toggle| toggle.justify_end())
-            .rounded_full()
-            .bg(rgb(if rounded { 0x4f7eca } else { 0x465268 }))
-            .cursor_pointer()
-            .child(div().size(px(14.0)).rounded_full().bg(rgb(0xecf3ff)))
-            .on_click(cx.listener(|this, _, _, cx| {
+        let corners =
+            setting_switch("corner-rounding", rounded).on_click(cx.listener(|this, _, _, cx| {
                 this.update_settings(
                     |settings| {
                         settings.corners = match settings.corners {

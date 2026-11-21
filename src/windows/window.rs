@@ -1,10 +1,13 @@
-use ::windows::Win32::Foundation::{LPARAM, LRESULT, POINT, WPARAM};
+use ::windows::Win32::Foundation::{
+    ERROR_SUCCESS, GetLastError, LPARAM, LRESULT, POINT, SetLastError, WPARAM,
+};
 use ::windows::Win32::Graphics::Gdi::ClientToScreen;
 use ::windows::Win32::UI::HiDpi::GetDpiForWindow;
 use ::windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClientRect, GetWindowRect, HWND_TOPMOST, IsIconic, IsWindowVisible, SW_RESTORE,
-    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
-    SetForegroundWindow, SetWindowPos, ShowWindow, ShowWindowAsync, USER_DEFAULT_SCREEN_DPI,
+    EnumWindows, GWL_STYLE, GetClientRect, GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST,
+    IsIconic, IsWindowVisible, SW_RESTORE, SW_SHOWNOACTIVATE, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SetForegroundWindow, SetWindowLongPtrW,
+    SetWindowPos, ShowWindow, ShowWindowAsync, USER_DEFAULT_SCREEN_DPI, WS_CAPTION, WS_POPUP,
 };
 use ::windows::Win32::{
     Foundation::{COLORREF, E_FAIL, HWND, RECT},
@@ -236,6 +239,14 @@ pub fn configure_window(window: &gpui::Window) -> Result<(), Box<dyn std::error:
     let hwnd = window_hwnd(window)?;
 
     unsafe {
+        // GPUI omits WS_POPUP, which leaves Windows enforcing a minimum caption height.
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
+        let popup_style = (style & !WS_CAPTION.0) | WS_POPUP.0;
+        SetLastError(ERROR_SUCCESS);
+        if SetWindowLongPtrW(hwnd, GWL_STYLE, popup_style as isize) == 0 {
+            GetLastError().ok()?;
+        }
+
         if !SetWindowSubclass(hwnd, Some(notch_window_proc), 1, 0).as_bool() {
             return Err("Failed to install notch window handler".into());
         }
@@ -248,7 +259,7 @@ pub fn configure_window(window: &gpui::Window) -> Result<(), Box<dyn std::error:
             0,
             0,
             0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
         )?;
     }
 
