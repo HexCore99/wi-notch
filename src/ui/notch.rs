@@ -560,12 +560,15 @@ impl Render for Notch {
         };
         let hovered = window.is_window_hovered()
             && resting_size.is_none_or(|(width, height)| {
-                // Expanding the volume bar under the pointer should leave the player closed.
-                let inset = ((f32::from(window.bounds().size.width) - width - self.volume_stretch)
-                    / 2.0)
-                    .max(0.0);
-                Bounds::new(point(px(inset), px(0.0)), size(px(width), px(height)))
-                    .contains(&window.mouse_position())
+                let viewport = window.viewport_size();
+                if viewport.width <= px(width) && viewport.height <= px(height) {
+                    return true;
+                }
+                // A wider volume bar should only open the player over the resting notch.
+                let inset =
+                    ((f32::from(viewport.width) - width - self.volume_stretch) / 2.0).max(0.0);
+                let bounds = Bounds::new(point(px(inset), px(0.0)), size(px(width), px(height)));
+                crate::windows::window::cursor_in_client_bounds(window, bounds)
             });
         if self.hovered != hovered {
             self.hovered = hovered;
@@ -588,7 +591,7 @@ impl Render for Notch {
             f32::from(display.bounds().size.height)
         });
         let volume = self.volume_feedback.frame(Instant::now());
-        let volume_hud = volume.filter(|_| resting_size.is_some());
+        let volume_hud = volume.filter(|_| matches!(self.mode, Mode::Compact | Mode::Collapsed));
         let target = if volume_hud.is_some() {
             VOLUME_HUD_SIZE
         } else {

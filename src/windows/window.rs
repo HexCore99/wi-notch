@@ -1,13 +1,14 @@
 use ::windows::Win32::Foundation::{
     ERROR_SUCCESS, GetLastError, LPARAM, LRESULT, POINT, SetLastError, WPARAM,
 };
-use ::windows::Win32::Graphics::Gdi::ClientToScreen;
+use ::windows::Win32::Graphics::Gdi::{ClientToScreen, ScreenToClient};
 use ::windows::Win32::UI::HiDpi::GetDpiForWindow;
 use ::windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GWL_STYLE, GetClientRect, GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST,
-    IsIconic, IsWindowVisible, SW_RESTORE, SW_SHOWNOACTIVATE, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, ShowWindowAsync, USER_DEFAULT_SCREEN_DPI, WS_CAPTION, WS_POPUP,
+    EnumWindows, GWL_STYLE, GetClientRect, GetCursorPos, GetWindowLongPtrW, GetWindowRect,
+    HWND_TOPMOST, IsIconic, IsWindowVisible, SW_RESTORE, SW_SHOWNOACTIVATE, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SetForegroundWindow,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, ShowWindowAsync, USER_DEFAULT_SCREEN_DPI,
+    WS_CAPTION, WS_POPUP,
 };
 use ::windows::Win32::{
     Foundation::{COLORREF, E_FAIL, HWND, RECT},
@@ -61,6 +62,23 @@ fn window_hwnd(window: &gpui::Window) -> Result<HWND, Box<dyn std::error::Error>
         return Err("Expected a Windows window".into());
     };
     Ok(HWND(handle.hwnd.get() as *mut std::ffi::c_void))
+}
+
+pub fn cursor_in_client_bounds(window: &gpui::Window, bounds: gpui::Bounds<gpui::Pixels>) -> bool {
+    let Ok(hwnd) = window_hwnd(window) else {
+        return false;
+    };
+    let mut cursor = POINT::default();
+    if unsafe { GetCursorPos(&mut cursor) }.is_err()
+        || !unsafe { ScreenToClient(hwnd, &mut cursor) }.as_bool()
+    {
+        return false;
+    }
+    let scale = window.scale_factor();
+    bounds.contains(&gpui::point(
+        gpui::px(cursor.x as f32 / scale),
+        gpui::px(cursor.y as f32 / scale),
+    ))
 }
 
 pub(super) fn focus_app_window(app_id: &str) -> ::windows::core::Result<bool> {
