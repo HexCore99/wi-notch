@@ -1,7 +1,7 @@
 use chrono::{DateTime, TimeDelta, Utc};
 use gpui::{prelude::*, *};
 
-use crate::prayer::{DaySchedule, PRAYERS, Schedule, ScheduledPrayer};
+use crate::prayer::{DaySchedule, PRAYERS, Schedule};
 
 use super::notch::PAGE_BODY_WIDTH;
 
@@ -16,32 +16,32 @@ const PRAYER_NAMES: [&str; PRAYERS.len()] = ["Fajr", "Dhuhr", "Asr", "Maghrib", 
 pub(super) fn header(schedule: &Schedule, now: DateTime<Utc>) -> Div {
     let local = now.with_timezone(&schedule.city.zone);
     div()
-        .w(px(248.0))
+        .max_w(px(264.0))
         .flex()
         .items_center()
-        .justify_between()
-        .gap(px(12.0))
-        .font_family("Consolas")
-        .font_weight(FontWeight::NORMAL)
-        .text_size(px(11.0))
-        .text_color(rgb(MUTED))
+        .gap(px(13.0))
+        .whitespace_nowrap()
+        .text_size(px(12.0))
         .child(
             div()
                 .flex_none()
-                .child(local.format("%a %d %b").to_string().to_uppercase()),
+                .relative()
+                .left(px(-5.0))
+                .child(local.format("%a %d %b %Y").to_string()),
         )
         .child(
             div()
                 .min_w(px(0.0))
-                .flex()
-                .items_center()
-                .gap(px(5.0))
-                .child(div().truncate().child(schedule.city.name.to_uppercase()))
-                .child(
-                    div()
-                        .flex_none()
-                        .child(format!("· {}", local.format("%-I:%M %p"))),
-                ),
+                .truncate()
+                .text_color(rgb(GOLD))
+                .child(schedule.city.name),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_color(rgb(0xffffff))
+                .text_size(px(15.0))
+                .child(local.format("%-I:%M %p").to_string()),
         )
 }
 
@@ -62,24 +62,7 @@ pub(super) fn panel(schedule: &Schedule, now: DateTime<Utc>, background: u32) ->
     } else {
         "starts in"
     };
-    let day_label = day.and_then(|day| match day.date.cmp(&local_date) {
-        std::cmp::Ordering::Greater => Some("Tomorrow's schedule"),
-        std::cmp::Ordering::Less => Some("Yesterday's schedule"),
-        std::cmp::Ordering::Equal => None,
-    });
-
-    let previous = active
-        .as_ref()
-        .map(|waqt| waqt.prayer)
-        .or_else(|| schedule.previous(now));
-    let progress = day.and_then(|day| {
-        Some(progress_position(
-            day,
-            previous.as_ref()?,
-            next.as_ref()?,
-            now,
-        ))
-    });
+    let tomorrow = day.is_some_and(|day| day.date > local_date);
 
     let hero = div()
         .h(px(71.0))
@@ -96,19 +79,17 @@ pub(super) fn panel(schedule: &Schedule, now: DateTime<Utc>, background: u32) ->
                 .child(
                     div()
                         .truncate()
-                        .font_family("Georgia")
-                        .font_weight(FontWeight::NORMAL)
                         .text_color(rgb(TEXT))
-                        .text_size(px(if shown.is_some() { 38.0 } else { 22.0 }))
-                        .line_height(px(43.0))
+                        .text_size(px(if shown.is_some() { 34.0 } else { 22.0 }))
+                        .line_height(px(40.0))
                         .child(name),
                 )
-                .when_some(day_label, |heading, label| {
+                .when(tomorrow, |heading| {
                     heading.child(
                         div()
                             .text_size(px(10.0))
                             .text_color(rgb(MUTED))
-                            .child(label),
+                            .child("Tomorrow's schedule"),
                     )
                 }),
         )
@@ -118,11 +99,10 @@ pub(super) fn panel(schedule: &Schedule, now: DateTime<Utc>, background: u32) ->
                 .flex()
                 .flex_col()
                 .items_end()
-                .font_family("Consolas")
                 .child(
                     div()
-                        .text_size(px(26.0))
-                        .line_height(px(30.0))
+                        .text_size(px(24.0))
+                        .line_height(px(29.0))
                         .text_color(rgb(if active.is_some() { GOLD } else { TEXT }))
                         .child(countdown),
                 )
@@ -146,7 +126,7 @@ pub(super) fn panel(schedule: &Schedule, now: DateTime<Utc>, background: u32) ->
             schedule,
             day,
             active.as_ref().map(|waqt| waqt.prayer.index),
-            progress,
+            now,
             background,
         ))
 }
@@ -155,10 +135,14 @@ fn timeline(
     schedule: &Schedule,
     day: Option<&DaySchedule>,
     active: Option<usize>,
-    progress: Option<f32>,
+    now: DateTime<Utc>,
     background: u32,
 ) -> Div {
-    let progress_color = if active.is_some() { GOLD } else { MUTED };
+    let reached = reached_checkpoints(day, now);
+    let fill_end = reached
+        .iter()
+        .rposition(|&reached| reached)
+        .map(prayer_position);
     div()
         .relative()
         .w_full()
@@ -172,17 +156,6 @@ fn timeline(
                 .h(px(2.0))
                 .bg(rgb(0x393632)),
         )
-        .when_some(progress, |row, position| {
-            row.child(
-                div()
-                    .absolute()
-                    .top(px(4.0))
-                    .left(px(TRACK_START))
-                    .w(px(position - TRACK_START))
-                    .h(px(2.0))
-                    .bg(rgb(progress_color)),
-            )
-        })
         .children(PRAYER_NAMES.into_iter().enumerate().map(|(index, name)| {
             let lit = active == Some(index);
             let time = match day {
@@ -215,45 +188,43 @@ fn timeline(
                         .border_1()
                         .border_color(rgb(0x625d55))
                         .bg(rgb(background))
+                        .when(reached[index], |marker| {
+                            marker.border_color(rgb(GOLD)).bg(rgb(GOLD))
+                        })
                         .when(lit, |marker| {
-                            marker
-                                .border_color(rgb(GOLD))
-                                .bg(rgb(GOLD))
-                                .shadow(vec![BoxShadow {
-                                    color: rgba(0xf2b74f99).into(),
-                                    offset: point(px(0.0), px(0.0)),
-                                    blur_radius: px(10.0),
-                                    spread_radius: px(1.0),
-                                }])
+                            marker.shadow(vec![BoxShadow {
+                                color: rgba(0xf2b74f99).into(),
+                                offset: point(px(0.0), px(0.0)),
+                                blur_radius: px(10.0),
+                                spread_radius: px(1.0),
+                            }])
                         }),
                 )
                 .child(
                     div()
-                        .font_family("Georgia")
-                        .text_size(px(14.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_size(px(12.0))
                         .line_height(px(17.0))
                         .text_color(rgb(if lit { GOLD } else { TEXT }))
                         .child(name),
                 )
                 .child(
                     div()
-                        .font_family("Consolas")
                         .text_size(px(11.0))
                         .line_height(px(14.0))
                         .text_color(rgb(if lit { GOLD } else { MUTED }))
                         .child(time),
                 )
         }))
-        .when_some(progress, |row, position| {
-            let dot = 6.0;
+        .when_some(fill_end, |row, end| {
             row.child(
                 div()
                     .absolute()
-                    .top(px((MARKER_SIZE - dot) / 2.0))
-                    .left(px(position - dot / 2.0))
-                    .size(px(dot))
-                    .rounded_full()
-                    .bg(rgb(if active.is_some() { 0xffedc6 } else { MUTED })),
+                    .top(px(4.0))
+                    .left(px(TRACK_START))
+                    .w(px(end - TRACK_START))
+                    .h(px(2.0))
+                    .bg(rgb(GOLD)),
             )
         })
 }
@@ -262,26 +233,10 @@ fn prayer_position(index: usize) -> f32 {
     (index as f32 + 0.5) * PAGE_BODY_WIDTH / PRAYER_NAMES.len() as f32
 }
 
-fn progress_position(
-    day: &DaySchedule,
-    previous: &ScheduledPrayer,
-    next: &ScheduledPrayer,
-    now: DateTime<Utc>,
-) -> f32 {
-    // Overnight the visible schedule can show either side of the Isha to Fajr interval.
-    let start = if previous.day.date == day.date {
-        prayer_position(previous.index)
-    } else {
-        TRACK_START
-    };
-    let end = if next.day.date == day.date {
-        prayer_position(next.index)
-    } else {
-        TRACK_END
-    };
-    let elapsed = (now - previous.time).as_seconds_f64();
-    let interval = (next.time - previous.time).as_seconds_f64();
-    start + (end - start) * (elapsed / interval) as f32
+fn reached_checkpoints(day: Option<&DaySchedule>, now: DateTime<Utc>) -> [bool; PRAYERS.len()] {
+    day.map_or([false; PRAYERS.len()], |day| {
+        day.times.map(|time| time.is_some_and(|start| start <= now))
+    })
 }
 
 fn format_countdown(remaining: TimeDelta) -> String {
@@ -298,33 +253,21 @@ fn format_countdown(remaining: TimeDelta) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Schedule, TRACK_END, format_countdown, prayer_position, progress_position};
+    use super::{Schedule, format_countdown, reached_checkpoints};
     use crate::prayer::{DHAKA_ID, city};
     use chrono::{TimeDelta, TimeZone, Utc};
 
     #[test]
-    fn progress_tracks_elapsed_time_and_extends_past_isha() {
+    fn checkpoints_fill_at_their_start_times_and_stay_filled() {
         let noon = Utc.with_ymd_and_hms(2026, 11, 23, 6, 0, 0).unwrap();
         let schedule = Schedule::new(city(DHAKA_ID), noon);
         let today = schedule.today().unwrap();
-        let [fajr, dhuhr, _, _, isha] = today.times.map(Option::unwrap);
-        let next_fajr = schedule.next(isha).unwrap().time;
-
-        for (start, end, left, right) in [
-            (fajr, dhuhr, prayer_position(0), prayer_position(1)),
-            (isha, next_fajr, prayer_position(4), TRACK_END),
-        ] {
-            let half = start + (end - start) / 2;
-            let position = |now| {
-                progress_position(
-                    today,
-                    &schedule.previous(now).unwrap(),
-                    &schedule.next(now).unwrap(),
-                    now,
-                )
-            };
-            assert!((position(start) - left).abs() < 0.001);
-            assert!((position(half) - (left + right) / 2.0).abs() < 0.001);
+        for (index, start) in today.times.map(Option::unwrap).into_iter().enumerate() {
+            let before = reached_checkpoints(Some(today), start - TimeDelta::seconds(1));
+            assert!(!before[index]);
+            let reached = reached_checkpoints(Some(today), start);
+            assert!(reached[..=index].iter().all(|&filled| filled));
+            assert!(reached[index + 1..].iter().all(|&filled| !filled));
         }
     }
 
