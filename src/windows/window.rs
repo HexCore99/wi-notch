@@ -1,13 +1,14 @@
 use ::windows::Win32::Foundation::{
     ERROR_SUCCESS, GetLastError, LPARAM, LRESULT, POINT, SetLastError, WPARAM,
 };
-use ::windows::Win32::Graphics::Gdi::ClientToScreen;
+use ::windows::Win32::Graphics::Gdi::{ClientToScreen, ScreenToClient};
 use ::windows::Win32::UI::HiDpi::GetDpiForWindow;
 use ::windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GWL_STYLE, GetClientRect, GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST,
-    IsIconic, IsWindowVisible, SW_RESTORE, SW_SHOWNOACTIVATE, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, ShowWindowAsync, USER_DEFAULT_SCREEN_DPI, WS_CAPTION, WS_POPUP,
+    EnumWindows, GWL_STYLE, GetClientRect, GetCursorPos, GetWindowLongPtrW, GetWindowRect,
+    HWND_TOPMOST, IsIconic, IsWindowVisible, SW_RESTORE, SW_SHOWNOACTIVATE, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SetForegroundWindow,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, ShowWindowAsync, USER_DEFAULT_SCREEN_DPI,
+    WS_CAPTION, WS_POPUP,
 };
 use ::windows::Win32::{
     Foundation::{COLORREF, E_FAIL, HWND, RECT},
@@ -61,6 +62,23 @@ fn window_hwnd(window: &gpui::Window) -> Result<HWND, Box<dyn std::error::Error>
         return Err("Expected a Windows window".into());
     };
     Ok(HWND(handle.hwnd.get() as *mut std::ffi::c_void))
+}
+
+pub fn cursor_in_client_bounds(window: &gpui::Window, bounds: gpui::Bounds<gpui::Pixels>) -> bool {
+    let Ok(hwnd) = window_hwnd(window) else {
+        return false;
+    };
+    let mut cursor = POINT::default();
+    if unsafe { GetCursorPos(&mut cursor) }.is_err()
+        || !unsafe { ScreenToClient(hwnd, &mut cursor) }.as_bool()
+    {
+        return false;
+    }
+    let scale = window.scale_factor();
+    bounds.contains(&gpui::point(
+        gpui::px(cursor.x as f32 / scale),
+        gpui::px(cursor.y as f32 / scale),
+    ))
 }
 
 pub(super) fn focus_app_window(app_id: &str) -> ::windows::core::Result<bool> {
@@ -117,6 +135,7 @@ pub fn place_notch(
     cx: &gpui::App,
     width: f32,
     height: f32,
+    horizontal_offset: f32,
     top_gap: u32,
     monitor: &Monitor,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -164,7 +183,7 @@ pub fn place_notch(
     // SetWindowPos moves the outer window. Offset it to place the visible client area.
     let inset_x = ((client_origin.x - outer.left) as f32 * scale_ratio).round() as i32;
     let inset_y = ((client_origin.y - outer.top) as f32 * scale_ratio).round() as i32;
-    let x = (f32::from(origin.x) * scale).round() as i32 - inset_x;
+    let x = ((f32::from(origin.x) + horizontal_offset) * scale).round() as i32 - inset_x;
     let y = (f32::from(origin.y) * scale).round() as i32 - inset_y;
 
     // Windows can move or hide the HWND even when the saved position hasn't changed.
