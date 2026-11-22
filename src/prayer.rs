@@ -167,7 +167,7 @@ pub struct Schedule {
     days: Vec<DaySchedule>,
 }
 
-pub struct UpcomingPrayer<'a> {
+pub struct ScheduledPrayer<'a> {
     pub day: &'a DaySchedule,
     pub index: usize,
     pub time: DateTime<Utc>,
@@ -194,18 +194,26 @@ impl Schedule {
         self.days.iter().find(|day| day.date == self.date)
     }
 
-    pub fn next(&self, now: DateTime<Utc>) -> Option<UpcomingPrayer<'_>> {
-        self.days
-            .iter()
-            .flat_map(|day| {
-                day.times
-                    .iter()
-                    .enumerate()
-                    .filter_map(move |(index, time)| {
-                        let time = (*time)?;
-                        (time > now).then_some(UpcomingPrayer { day, index, time })
-                    })
-            })
+    fn prayers(&self) -> impl Iterator<Item = ScheduledPrayer<'_>> {
+        self.days.iter().flat_map(|day| {
+            day.times
+                .iter()
+                .enumerate()
+                .filter_map(move |(index, time)| {
+                    time.map(|time| ScheduledPrayer { day, index, time })
+                })
+        })
+    }
+
+    pub fn previous(&self, now: DateTime<Utc>) -> Option<ScheduledPrayer<'_>> {
+        self.prayers()
+            .filter(|prayer| prayer.time <= now)
+            .max_by_key(|prayer| prayer.time)
+    }
+
+    pub fn next(&self, now: DateTime<Utc>) -> Option<ScheduledPrayer<'_>> {
+        self.prayers()
+            .filter(|prayer| prayer.time > now)
             .min_by_key(|prayer| prayer.time)
     }
 }

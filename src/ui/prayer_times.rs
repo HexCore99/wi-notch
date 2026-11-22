@@ -1,19 +1,43 @@
 use chrono::{DateTime, Utc};
 use gpui::{prelude::*, *};
 
-use crate::prayer::Schedule;
+use crate::prayer::{PRAYERS, Schedule, ScheduledPrayer};
 
 use super::notch::PAGE_BODY_WIDTH;
 
 const ACCENT: u32 = 0xba9cff;
 const MUTED: u32 = 0xa5a2b1;
-const PRAYER_LABELS: [(&str, &str); 5] = [
+const TRACK_START: f32 = 4.0;
+const TRACK_HEIGHT: f32 = 8.0;
+const PROGRESS_DOT: f32 = 7.0;
+const PRAYER_LABELS: [(&str, &str); PRAYERS.len()] = [
     ("Fajr", "⛅\u{fe0e}"),
     ("Dhuhr", "☀\u{fe0e}"),
     ("Asr", "☀\u{fe0e}"),
     ("Maghrib", "◒"),
     ("Isha", "☾"),
 ];
+
+fn prayer_position(index: usize) -> f32 {
+    (index as f32 + 0.5) * PAGE_BODY_WIDTH / PRAYER_LABELS.len() as f32
+}
+
+fn progress_position(
+    schedule: &Schedule,
+    now: DateTime<Utc>,
+    next: &ScheduledPrayer,
+) -> Option<f32> {
+    let previous = schedule.previous(now)?;
+    // Overnight the incoming segment ends at the first prayer on the new schedule.
+    let start = if previous.day.date == next.day.date {
+        prayer_position(previous.index)
+    } else {
+        TRACK_START
+    };
+    let elapsed = (now - previous.time).as_seconds_f64();
+    let interval = (next.time - previous.time).as_seconds_f64();
+    Some(start + (prayer_position(next.index) - start) * (elapsed / interval) as f32)
+}
 
 pub(super) fn header(schedule: &Schedule, now: DateTime<Utc>) -> Div {
     let local = now.with_timezone(&schedule.city.zone);
@@ -46,6 +70,9 @@ pub(super) fn header(schedule: &Schedule, now: DateTime<Utc>) -> Div {
 pub(super) fn panel(schedule: &Schedule, now: DateTime<Utc>, background: u32) -> Div {
     let local_date = now.with_timezone(&schedule.city.zone).date_naive();
     let next = schedule.next(now);
+    let progress = next
+        .as_ref()
+        .and_then(|next| progress_position(schedule, now, next));
     let day = next
         .as_ref()
         .map(|prayer| prayer.day)
@@ -73,7 +100,7 @@ pub(super) fn panel(schedule: &Schedule, now: DateTime<Utc>, background: u32) ->
     );
     let missing_times = day.is_none_or(|day| day.times.iter().any(Option::is_none));
     let next_prayer = div()
-        .h(px(58.0))
+        .h(px(52.0))
         .flex()
         .items_center()
         .child(
@@ -117,16 +144,39 @@ pub(super) fn panel(schedule: &Schedule, now: DateTime<Utc>, background: u32) ->
     let timeline = div()
         .relative()
         .w_full()
+        .pt(px(TRACK_HEIGHT))
         .flex()
         .child(
             div()
                 .absolute()
-                .top(px(9.0))
-                .left(px(PAGE_BODY_WIDTH / 10.0))
-                .right(px(PAGE_BODY_WIDTH / 10.0))
+                .top(px(3.0))
+                .left(px(TRACK_START))
+                .w(px(prayer_position(PRAYER_LABELS.len() - 1) - TRACK_START))
                 .h(px(1.0))
                 .bg(rgba(0xba9cff50)),
         )
+        .when_some(progress, |timeline, position| {
+            timeline
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(2.5))
+                        .left(px(TRACK_START))
+                        .w(px(position - TRACK_START))
+                        .h(px(2.0))
+                        .rounded_full()
+                        .bg(rgb(ACCENT)),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(0.0))
+                        .left(px(position - PROGRESS_DOT / 2.0))
+                        .size(px(PROGRESS_DOT))
+                        .rounded_full()
+                        .bg(rgb(ACCENT)),
+                )
+        })
         .children(
             PRAYER_LABELS
                 .into_iter()
@@ -153,6 +203,7 @@ pub(super) fn panel(schedule: &Schedule, now: DateTime<Utc>, background: u32) ->
                         .flex_col()
                         .items_center()
                         .text_size(px(11.0))
+                        .line_height(px(14.0))
                         .when(active, |item| item.text_color(rgb(ACCENT)))
                         .child(
                             div()
@@ -188,7 +239,7 @@ pub(super) fn panel(schedule: &Schedule, now: DateTime<Utc>, background: u32) ->
         .child(next_prayer)
         .child(
             div()
-                .h(px(16.0))
+                .h(px(14.0))
                 .px(px(6.0))
                 .flex()
                 .items_center()
@@ -208,4 +259,31 @@ pub(super) fn panel(schedule: &Schedule, now: DateTime<Utc>, background: u32) ->
                 }),
         )
         .child(timeline)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Schedule, TRACK_START, prayer_position, progress_position};
+    use crate::prayer::{DHAKA_ID, city};
+    use chrono::{TimeZone, Utc};
+
+    #[test]
+    fn timeline_dot_moves_between_prayers_and_wraps_for_fajr() {
+        let noon = Utc.with_ymd_and_hms(2026, 11, 23, 6, 0, 0).unwrap();
+        let schedule = Schedule::new(city(DHAKA_ID), noon);
+        let today = schedule.today().unwrap();
+        let [fajr, dhuhr, _, _, isha] = today.times.map(Option::unwrap);
+        let next_fajr = schedule.next(isha).unwrap().time;
+
+        for (start, end, left, right) in [
+            (fajr, dhuhr, prayer_position(0), prayer_position(1)),
+            (isha, next_fajr, TRACK_START, prayer_position(0)),
+        ] {
+            let half = start + (end - start) / 2;
+            let position =
+                |now| progress_position(&schedule, now, &schedule.next(now).unwrap()).unwrap();
+            assert!((position(start) - left).abs() < 0.001);
+            assert!((position(half) - (left + right) / 2.0).abs() < 0.001);
+        }
+    }
 }
