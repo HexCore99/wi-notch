@@ -2,6 +2,7 @@
 mod appearance;
 mod icons;
 mod notch_geometry;
+mod prayer;
 mod ui;
 mod windows;
 

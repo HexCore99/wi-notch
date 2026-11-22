@@ -1,11 +1,13 @@
 mod appearance;
 mod display;
 mod general;
+mod prayer;
 
 use appearance::AppearancePage;
 use display::DisplayPage;
 use general::GeneralPage;
 use gpui::{prelude::*, *};
+use prayer::PrayerPage;
 
 use crate::appearance::AppearanceSettings;
 use crate::windows::window::remove_window_border;
@@ -19,6 +21,7 @@ enum Page {
     General,
     Appearance,
     Display,
+    PrayerTimes,
 }
 
 impl Page {
@@ -27,6 +30,7 @@ impl Page {
             Self::General => "General",
             Self::Appearance => "Appearance",
             Self::Display => "Display",
+            Self::PrayerTimes => "Prayer Times",
         }
     }
 }
@@ -36,11 +40,13 @@ pub struct SettingsView {
     general_page: Entity<GeneralPage>,
     appearance_page: Entity<AppearancePage>,
     display_page: Entity<DisplayPage>,
+    prayer_page: Entity<PrayerPage>,
 }
 
 impl SettingsView {
     pub fn open(
         appearance: Entity<AppearanceSettings>,
+        prayer_times: bool,
         cx: &mut App,
     ) -> Result<WindowHandle<Self>> {
         cx.open_window(
@@ -60,13 +66,23 @@ impl SettingsView {
                     eprintln!("Failed to remove the Settings window border: {error}");
                 }
                 cx.new(|cx| Self {
-                    page: Page::General,
+                    page: if prayer_times {
+                        Page::PrayerTimes
+                    } else {
+                        Page::General
+                    },
                     general_page: cx.new(|_| GeneralPage::new(appearance.clone())),
                     appearance_page: cx.new(|_| AppearancePage::new(appearance.clone())),
-                    display_page: cx.new(|_| DisplayPage::new(appearance)),
+                    display_page: cx.new(|_| DisplayPage::new(appearance.clone())),
+                    prayer_page: cx.new(|cx| PrayerPage::new(appearance, cx)),
                 })
             },
         )
+    }
+
+    pub fn show_prayer_times(&mut self, cx: &mut Context<Self>) {
+        self.page = Page::PrayerTimes;
+        cx.notify();
     }
 
     fn sidebar_item(&self, page: Page, cx: &Context<Self>) -> Stateful<Div> {
@@ -83,6 +99,14 @@ impl SettingsView {
             ),
             Page::Appearance => (sidebar_icon("circle-half.svg"), rgb(0x56627a)),
             Page::Display => (sidebar_icon("display-fill.svg"), rgb(0x5454d4)),
+            Page::PrayerTimes => (
+                div()
+                    .font_family("Segoe UI Symbol")
+                    .text_size(px(14.0))
+                    .child("☾")
+                    .into_any_element(),
+                rgb(0x6b49a6),
+            ),
         };
         div()
             .id(page.title())
@@ -121,6 +145,7 @@ impl Render for SettingsView {
             Page::General => self.general_page.clone().into_any_element(),
             Page::Appearance => self.appearance_page.clone().into_any_element(),
             Page::Display => self.display_page.clone().into_any_element(),
+            Page::PrayerTimes => self.prayer_page.clone().into_any_element(),
         };
         div()
             .size_full()
@@ -153,7 +178,8 @@ impl Render for SettingsView {
                     )
                     .child(self.sidebar_item(Page::General, cx))
                     .child(self.sidebar_item(Page::Appearance, cx))
-                    .child(self.sidebar_item(Page::Display, cx)),
+                    .child(self.sidebar_item(Page::Display, cx))
+                    .child(self.sidebar_item(Page::PrayerTimes, cx)),
             )
             .child(
                 div()

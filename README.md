@@ -6,6 +6,7 @@ wi-notch is a desktop overlay for Windows that puts the clock, media controls, a
 
 - **Clock and media controls** with the date, album artwork, playback progress, and previous, play/pause, and next controls for media sessions exposed by Windows.
 - **Windows notifications** with an unread indicator, brief previews, and a scrollable list with animated transitions. Select a notification to open its source app.
+- **Prayer times** with a live countdown and an offline city picker. Use either side arrow on the expanded notch to switch between Music and Prayer Times.
 - **Live settings** for the background, corner rounding, display, and vertical position.
 
 ## Run from source
@@ -58,6 +59,9 @@ Hover over the notch and click the gear. Changes are applied immediately and sav
 
 - **Appearance** lets you choose a black or charcoal background and toggle rounded corners.
 - **Display** lets you pick a monitor or follow the Windows primary display. **Top gap** sets the distance from the top edge, and **Offset** sets how much each press of **−** or **+** changes it.
+- **Prayer Times** lets you select a city. Dhaka is the default. The schedule is calculated for the city's local date using the Karachi method and Hanafi Asr.
+
+The bundled city list adapts the GeoNames `cities15000`, `admin1CodesASCII`, and `countryInfo` datasets. [GeoNames downloads](https://download.geonames.org/export/dump/), [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
 
 ## Development
 
