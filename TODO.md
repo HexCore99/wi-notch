@@ -1,4 +1,4 @@
 - [] ADD notification Grouping
 - [] Material design to Music Player Progress bar.
 - [] Add Sound control
-- [] not expanding on hover
+- [x] not expanding on hover
