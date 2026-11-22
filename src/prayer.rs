@@ -121,6 +121,8 @@ pub const PRAYERS: [Prayer; 5] = [
 pub struct DaySchedule {
     pub date: NaiveDate,
     pub times: [Option<DateTime<Utc>>; PRAYERS.len()],
+    sunrise: Option<DateTime<Utc>>,
+    sunset: Option<DateTime<Utc>>,
 }
 
 impl DaySchedule {
@@ -141,19 +143,26 @@ impl DaySchedule {
         let dhuhr_seconds = seconds(prayers.dhuhr?);
         let dhuhr_offset = (dhuhr_seconds - noon_seconds + 43_200).rem_euclid(86_400) - 43_200;
         let dhuhr = midnight.checked_add_signed(TimeDelta::seconds(noon_seconds + dhuhr_offset))?;
-        let times = PRAYERS.map(|prayer| {
-            let time = seconds(prayers.time_for(prayer)?);
-            let offset = if prayer == Prayer::Fajr {
+        let to_utc = |reading, morning| {
+            let time = seconds(reading);
+            let offset = if morning {
                 -(dhuhr_seconds - time).rem_euclid(86_400)
             } else {
                 (time - dhuhr_seconds).rem_euclid(86_400)
             };
             dhuhr.checked_add_signed(TimeDelta::seconds(offset))
-        });
+        };
         Some(Self {
             date: dhuhr.with_timezone(&city.zone).date_naive(),
-            times,
+            times: PRAYERS.map(|prayer| to_utc(prayers.time_for(prayer)?, prayer == Prayer::Fajr)),
+            sunrise: prayers.sunrise.and_then(|time| to_utc(time, true)),
+            sunset: prayers.sunset.and_then(|time| to_utc(time, false)),
         })
+    }
+
+    fn start(&self, prayer: Prayer) -> Option<DateTime<Utc>> {
+        let index = PRAYERS.iter().position(|&entry| entry == prayer)?;
+        self.times[index]
     }
 }
 
@@ -167,17 +176,23 @@ pub struct Schedule {
     days: Vec<DaySchedule>,
 }
 
+#[derive(Clone, Copy)]
 pub struct ScheduledPrayer<'a> {
     pub day: &'a DaySchedule,
     pub index: usize,
     pub time: DateTime<Utc>,
 }
 
+pub struct Waqt<'a> {
+    pub prayer: ScheduledPrayer<'a>,
+    pub end: DateTime<Utc>,
+}
+
 impl Schedule {
     pub fn new(city: &'static City, now: DateTime<Utc>) -> Self {
         let date = now.with_timezone(&city.zone).date_naive();
         // At the date line, a solar day's starting date can be a day away
-        // from the civil date. Keep yesterday's schedule for any late Isha.
+        // from the civil date. Keep yesterday's schedule for Isha after midnight.
         let days = (-2..=2)
             .filter_map(|offset| date.checked_add_signed(TimeDelta::days(offset)))
             .filter_map(|date| DaySchedule::calculate(city, date))
@@ -191,7 +206,11 @@ impl Schedule {
     }
 
     pub fn today(&self) -> Option<&DaySchedule> {
-        self.days.iter().find(|day| day.date == self.date)
+        self.day(self.date)
+    }
+
+    fn day(&self, date: NaiveDate) -> Option<&DaySchedule> {
+        self.days.iter().find(|day| day.date == date)
     }
 
     fn prayers(&self) -> impl Iterator<Item = ScheduledPrayer<'_>> {
@@ -215,6 +234,20 @@ impl Schedule {
         self.prayers()
             .filter(|prayer| prayer.time > now)
             .min_by_key(|prayer| prayer.time)
+    }
+
+    pub fn active_waqt(&self, now: DateTime<Utc>) -> Option<Waqt<'_>> {
+        let prayer = self.previous(now)?;
+        let day = prayer.day;
+        let end = match PRAYERS[prayer.index] {
+            Prayer::Fajr => day.sunrise,
+            Prayer::Dhuhr => day.start(Prayer::Asr),
+            Prayer::Asr => day.sunset,
+            Prayer::Maghrib => day.start(Prayer::Isha),
+            Prayer::Isha => self.day(day.date.succ_opt()?)?.start(Prayer::Fajr),
+            Prayer::Sunrise => None,
+        }?;
+        (now < end).then_some(Waqt { prayer, end })
     }
 }
 
@@ -311,6 +344,52 @@ mod tests {
         previous.times[4] = Some(late_isha);
         assert_eq!(schedule.next(now).unwrap().time, late_isha);
         assert_eq!(schedule.next(late_isha).unwrap().index, 0);
+    }
+
+    #[test]
+    fn waqt_starts_at_prayer_time_and_fajr_ends_at_sunrise() {
+        let schedule = Schedule::new(city(DHAKA_ID), utc(2026, 11, 23, 0));
+        let day = schedule.today().unwrap();
+        let [fajr, dhuhr, asr, maghrib, isha] = day.times.map(Option::unwrap);
+        let sunrise = day.sunrise.unwrap();
+        for (start, end, expected) in [
+            (fajr, sunrise, Prayer::Fajr),
+            (dhuhr, asr, Prayer::Dhuhr),
+            (asr, day.sunset.unwrap(), Prayer::Asr),
+            (maghrib, isha, Prayer::Maghrib),
+        ] {
+            let waqt = schedule.active_waqt(start).unwrap();
+            assert_eq!(PRAYERS[waqt.prayer.index], expected);
+            assert_eq!(waqt.end, end);
+        }
+        assert!(
+            schedule
+                .active_waqt(sunrise - TimeDelta::seconds(1))
+                .is_some()
+        );
+        assert!(schedule.active_waqt(sunrise).is_none());
+        assert!(
+            schedule
+                .active_waqt(dhuhr - TimeDelta::seconds(1))
+                .is_none()
+        );
+        assert_eq!(schedule.next(sunrise).unwrap().time, dhuhr);
+    }
+
+    #[test]
+    fn isha_stays_active_across_midnight_until_the_next_fajr() {
+        let city = city(DHAKA_ID);
+        let midnight = utc(2026, 11, 23, 18);
+        let schedule = Schedule::new(city, midnight);
+        let waqt = schedule.active_waqt(midnight).unwrap();
+        let fajr = schedule.today().unwrap().start(Prayer::Fajr).unwrap();
+        assert_eq!(PRAYERS[waqt.prayer.index], Prayer::Isha);
+        assert_eq!(waqt.prayer.day.date.succ_opt().unwrap(), schedule.date);
+        assert_eq!(waqt.end, fajr);
+        assert_eq!(
+            PRAYERS[schedule.active_waqt(fajr).unwrap().prayer.index],
+            Prayer::Fajr
+        );
     }
 
     #[test]

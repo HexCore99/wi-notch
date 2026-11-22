@@ -1,43 +1,17 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use gpui::{prelude::*, *};
 
-use crate::prayer::{PRAYERS, Schedule, ScheduledPrayer};
+use crate::prayer::{DaySchedule, PRAYERS, Schedule, ScheduledPrayer};
 
 use super::notch::PAGE_BODY_WIDTH;
 
-const ACCENT: u32 = 0xba9cff;
-const MUTED: u32 = 0xa5a2b1;
-const TRACK_START: f32 = 4.0;
-const TRACK_HEIGHT: f32 = 8.0;
-const PROGRESS_DOT: f32 = 7.0;
-const PRAYER_LABELS: [(&str, &str); PRAYERS.len()] = [
-    ("Fajr", "⛅\u{fe0e}"),
-    ("Dhuhr", "☀\u{fe0e}"),
-    ("Asr", "☀\u{fe0e}"),
-    ("Maghrib", "◒"),
-    ("Isha", "☾"),
-];
-
-fn prayer_position(index: usize) -> f32 {
-    (index as f32 + 0.5) * PAGE_BODY_WIDTH / PRAYER_LABELS.len() as f32
-}
-
-fn progress_position(
-    schedule: &Schedule,
-    now: DateTime<Utc>,
-    next: &ScheduledPrayer,
-) -> Option<f32> {
-    let previous = schedule.previous(now)?;
-    // Overnight the incoming segment ends at the first prayer on the new schedule.
-    let start = if previous.day.date == next.day.date {
-        prayer_position(previous.index)
-    } else {
-        TRACK_START
-    };
-    let elapsed = (now - previous.time).as_seconds_f64();
-    let interval = (next.time - previous.time).as_seconds_f64();
-    Some(start + (prayer_position(next.index) - start) * (elapsed / interval) as f32)
-}
+const GOLD: u32 = 0xf2b74f;
+const TEXT: u32 = 0xf4eee4;
+const MUTED: u32 = 0xa7a198;
+const TRACK_START: f32 = 8.0;
+const TRACK_END: f32 = PAGE_BODY_WIDTH - TRACK_START;
+const MARKER_SIZE: f32 = 10.0;
+const PRAYER_NAMES: [&str; PRAYERS.len()] = ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"];
 
 pub(super) fn header(schedule: &Schedule, now: DateTime<Utc>) -> Div {
     let local = now.with_timezone(&schedule.city.zone);
@@ -46,189 +20,120 @@ pub(super) fn header(schedule: &Schedule, now: DateTime<Utc>) -> Div {
         .flex()
         .items_center()
         .justify_between()
+        .gap(px(12.0))
+        .font_family("Consolas")
+        .font_weight(FontWeight::NORMAL)
+        .text_size(px(11.0))
+        .text_color(rgb(MUTED))
         .child(
             div()
-                .text_size(px(13.0))
-                .text_color(rgb(ACCENT))
-                .child("Prayer Times"),
+                .flex_none()
+                .child(local.format("%a %d %b").to_string().to_uppercase()),
         )
         .child(
             div()
+                .min_w(px(0.0))
                 .flex()
                 .items_center()
-                .gap(px(8.0))
-                .text_size(px(11.0))
+                .gap(px(5.0))
+                .child(div().truncate().child(schedule.city.name.to_uppercase()))
                 .child(
                     div()
-                        .text_color(rgb(MUTED))
-                        .child(local.format("%a %d %b").to_string()),
-                )
-                .child(local.format("%-I:%M %p").to_string()),
+                        .flex_none()
+                        .child(format!("· {}", local.format("%-I:%M %p"))),
+                ),
         )
 }
 
 pub(super) fn panel(schedule: &Schedule, now: DateTime<Utc>, background: u32) -> Div {
     let local_date = now.with_timezone(&schedule.city.zone).date_naive();
+    let active = schedule.active_waqt(now);
     let next = schedule.next(now);
-    let progress = next
+    let shown = active.as_ref().map(|waqt| &waqt.prayer).or(next.as_ref());
+    let day = shown.map(|prayer| prayer.day).or_else(|| schedule.today());
+    let name = shown.map_or("Unavailable", |prayer| PRAYER_NAMES[prayer.index]);
+    let countdown_end = active
         .as_ref()
-        .and_then(|next| progress_position(schedule, now, next));
-    let day = next
-        .as_ref()
-        .map(|prayer| prayer.day)
-        .or_else(|| schedule.today());
+        .map(|waqt| waqt.end)
+        .or_else(|| next.as_ref().map(|prayer| prayer.time));
+    let countdown = countdown_end.map_or_else(|| "—".to_owned(), |end| format_countdown(end - now));
+    let countdown_label = if active.is_some() {
+        "waqt left"
+    } else {
+        "starts in"
+    };
     let day_label = day.and_then(|day| match day.date.cmp(&local_date) {
-        std::cmp::Ordering::Greater => Some("Tomorrow"),
-        std::cmp::Ordering::Less => Some("Yesterday"),
+        std::cmp::Ordering::Greater => Some("Tomorrow's schedule"),
+        std::cmp::Ordering::Less => Some("Yesterday's schedule"),
         std::cmp::Ordering::Equal => None,
     });
-    let next_name = next
+
+    let previous = active
         .as_ref()
-        .map_or("Unavailable", |prayer| PRAYER_LABELS[prayer.index].0);
-    let countdown = next.as_ref().map_or_else(
-        || "—".to_owned(),
-        |prayer| {
-            let remaining = prayer.time - now;
-            let seconds = remaining.num_seconds() + i64::from(remaining.subsec_nanos() > 0);
-            format!(
-                "{:02}:{:02}:{:02}",
-                seconds / 3600,
-                seconds / 60 % 60,
-                seconds % 60
-            )
-        },
-    );
-    let missing_times = day.is_none_or(|day| day.times.iter().any(Option::is_none));
-    let next_prayer = div()
-        .h(px(52.0))
+        .map(|waqt| waqt.prayer)
+        .or_else(|| schedule.previous(now));
+    let progress = day.and_then(|day| {
+        Some(progress_position(
+            day,
+            previous.as_ref()?,
+            next.as_ref()?,
+            now,
+        ))
+    });
+
+    let hero = div()
+        .h(px(71.0))
+        .px(px(TRACK_START))
         .flex()
         .items_center()
+        .gap(px(8.0))
         .child(
             div()
                 .flex_1()
                 .min_w(px(0.0))
-                .pl(px(6.0))
                 .flex()
                 .flex_col()
                 .child(
                     div()
-                        .text_size(px(10.0))
-                        .text_color(rgb(MUTED))
-                        .child("Next prayer"),
+                        .truncate()
+                        .font_family("Georgia")
+                        .font_weight(FontWeight::NORMAL)
+                        .text_color(rgb(TEXT))
+                        .text_size(px(if shown.is_some() { 38.0 } else { 22.0 }))
+                        .line_height(px(43.0))
+                        .child(name),
                 )
-                .child(div().truncate().text_size(px(23.0)).child(next_name)),
+                .when_some(day_label, |heading, label| {
+                    heading.child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(rgb(MUTED))
+                            .child(label),
+                    )
+                }),
         )
         .child(
             div()
-                .w(px(142.0))
-                .pl(px(14.0))
-                .border_l_1()
-                .border_color(rgba(0xffffff28))
+                .flex_none()
                 .flex()
                 .flex_col()
+                .items_end()
+                .font_family("Consolas")
                 .child(
                     div()
-                        .font_family("Consolas")
-                        .text_size(px(25.0))
-                        .text_color(rgb(ACCENT))
+                        .text_size(px(26.0))
+                        .line_height(px(30.0))
+                        .text_color(rgb(if active.is_some() { GOLD } else { TEXT }))
                         .child(countdown),
                 )
-                .child(
-                    div()
-                        .text_size(px(10.0))
-                        .text_color(rgb(MUTED))
-                        .child("Remaining"),
-                ),
-        );
-
-    let timeline = div()
-        .relative()
-        .w_full()
-        .pt(px(TRACK_HEIGHT))
-        .flex()
-        .child(
-            div()
-                .absolute()
-                .top(px(3.0))
-                .left(px(TRACK_START))
-                .w(px(prayer_position(PRAYER_LABELS.len() - 1) - TRACK_START))
-                .h(px(1.0))
-                .bg(rgba(0xba9cff50)),
-        )
-        .when_some(progress, |timeline, position| {
-            timeline
-                .child(
-                    div()
-                        .absolute()
-                        .top(px(2.5))
-                        .left(px(TRACK_START))
-                        .w(px(position - TRACK_START))
-                        .h(px(2.0))
-                        .rounded_full()
-                        .bg(rgb(ACCENT)),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .top(px(0.0))
-                        .left(px(position - PROGRESS_DOT / 2.0))
-                        .size(px(PROGRESS_DOT))
-                        .rounded_full()
-                        .bg(rgb(ACCENT)),
-                )
-        })
-        .children(
-            PRAYER_LABELS
-                .into_iter()
-                .enumerate()
-                .map(|(index, (label, icon))| {
-                    let active = next.as_ref().is_some_and(|prayer| prayer.index == index);
-                    let time = day.and_then(|day| day.times[index]).map_or_else(
-                        || "—".to_owned(),
-                        |time| {
-                            let local_time = time.with_timezone(&schedule.city.zone);
-                            let suffix =
-                                if day.is_some_and(|day| local_time.date_naive() > day.date) {
-                                    " +1"
-                                } else {
-                                    ""
-                                };
-                            format!("{}{suffix}", local_time.format("%H:%M"))
-                        },
-                    );
-                    div()
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .text_size(px(11.0))
-                        .line_height(px(14.0))
-                        .when(active, |item| item.text_color(rgb(ACCENT)))
-                        .child(
-                            div()
-                                .size(px(19.0))
-                                .rounded_full()
-                                .border_1()
-                                .border_color(if active {
-                                    rgb(ACCENT).into()
-                                } else {
-                                    rgba(0xba9cff55)
-                                })
-                                .bg(rgb(background))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .font_family("Segoe UI Symbol")
-                                .text_size(px(13.0))
-                                .child(icon),
-                        )
-                        .child(label)
-                        .child(
-                            div()
-                                .when(!active, |time| time.text_color(rgb(MUTED)))
-                                .child(time),
-                        )
+                .when(countdown_end.is_some(), |counter| {
+                    counter.child(
+                        div()
+                            .font_weight(FontWeight::NORMAL)
+                            .text_size(px(11.0))
+                            .text_color(rgb(MUTED))
+                            .child(countdown_label),
+                    )
                 }),
         );
 
@@ -236,39 +141,169 @@ pub(super) fn panel(schedule: &Schedule, now: DateTime<Utc>, background: u32) ->
         .w(px(PAGE_BODY_WIDTH))
         .flex()
         .flex_col()
-        .child(next_prayer)
+        .child(hero)
+        .child(timeline(
+            schedule,
+            day,
+            active.as_ref().map(|waqt| waqt.prayer.index),
+            progress,
+            background,
+        ))
+}
+
+fn timeline(
+    schedule: &Schedule,
+    day: Option<&DaySchedule>,
+    active: Option<usize>,
+    progress: Option<f32>,
+    background: u32,
+) -> Div {
+    let progress_color = if active.is_some() { GOLD } else { MUTED };
+    div()
+        .relative()
+        .w_full()
+        .flex()
         .child(
             div()
-                .h(px(14.0))
-                .px(px(6.0))
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .text_size(px(10.0))
-                .text_color(rgb(MUTED))
-                .child(div().truncate().child(schedule.city.name))
-                .when(missing_times, |line| line.child("Some times unavailable"))
-                .when_some(day_label, |line, label| {
-                    line.child(
-                        div()
-                            .ml_auto()
-                            .text_color(rgb(ACCENT))
-                            .flex_none()
-                            .child(label),
-                    )
-                }),
+                .absolute()
+                .top(px(4.0))
+                .left(px(TRACK_START))
+                .w(px(TRACK_END - TRACK_START))
+                .h(px(2.0))
+                .bg(rgb(0x393632)),
         )
-        .child(timeline)
+        .when_some(progress, |row, position| {
+            row.child(
+                div()
+                    .absolute()
+                    .top(px(4.0))
+                    .left(px(TRACK_START))
+                    .w(px(position - TRACK_START))
+                    .h(px(2.0))
+                    .bg(rgb(progress_color)),
+            )
+        })
+        .children(PRAYER_NAMES.into_iter().enumerate().map(|(index, name)| {
+            let lit = active == Some(index);
+            let time = match day {
+                Some(day) => day.times[index].map_or_else(
+                    || "—".to_owned(),
+                    |time| {
+                        let local = time.with_timezone(&schedule.city.zone);
+                        let suffix = if local.date_naive() > day.date {
+                            " +1"
+                        } else {
+                            ""
+                        };
+                        format!("{}{suffix}", local.format("%H:%M"))
+                    },
+                ),
+                None => "—".to_owned(),
+            };
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .flex()
+                .flex_col()
+                .items_center()
+                .font_weight(FontWeight::NORMAL)
+                .child(
+                    div()
+                        .size(px(MARKER_SIZE))
+                        .mb(px(3.0))
+                        .rounded_full()
+                        .border_1()
+                        .border_color(rgb(0x625d55))
+                        .bg(rgb(background))
+                        .when(lit, |marker| {
+                            marker
+                                .border_color(rgb(GOLD))
+                                .bg(rgb(GOLD))
+                                .shadow(vec![BoxShadow {
+                                    color: rgba(0xf2b74f99).into(),
+                                    offset: point(px(0.0), px(0.0)),
+                                    blur_radius: px(10.0),
+                                    spread_radius: px(1.0),
+                                }])
+                        }),
+                )
+                .child(
+                    div()
+                        .font_family("Georgia")
+                        .text_size(px(14.0))
+                        .line_height(px(17.0))
+                        .text_color(rgb(if lit { GOLD } else { TEXT }))
+                        .child(name),
+                )
+                .child(
+                    div()
+                        .font_family("Consolas")
+                        .text_size(px(11.0))
+                        .line_height(px(14.0))
+                        .text_color(rgb(if lit { GOLD } else { MUTED }))
+                        .child(time),
+                )
+        }))
+        .when_some(progress, |row, position| {
+            let dot = 6.0;
+            row.child(
+                div()
+                    .absolute()
+                    .top(px((MARKER_SIZE - dot) / 2.0))
+                    .left(px(position - dot / 2.0))
+                    .size(px(dot))
+                    .rounded_full()
+                    .bg(rgb(if active.is_some() { 0xffedc6 } else { MUTED })),
+            )
+        })
+}
+
+fn prayer_position(index: usize) -> f32 {
+    (index as f32 + 0.5) * PAGE_BODY_WIDTH / PRAYER_NAMES.len() as f32
+}
+
+fn progress_position(
+    day: &DaySchedule,
+    previous: &ScheduledPrayer,
+    next: &ScheduledPrayer,
+    now: DateTime<Utc>,
+) -> f32 {
+    // Overnight the visible schedule can show either side of the Isha to Fajr interval.
+    let start = if previous.day.date == day.date {
+        prayer_position(previous.index)
+    } else {
+        TRACK_START
+    };
+    let end = if next.day.date == day.date {
+        prayer_position(next.index)
+    } else {
+        TRACK_END
+    };
+    let elapsed = (now - previous.time).as_seconds_f64();
+    let interval = (next.time - previous.time).as_seconds_f64();
+    start + (end - start) * (elapsed / interval) as f32
+}
+
+fn format_countdown(remaining: TimeDelta) -> String {
+    let seconds = remaining.num_seconds() + i64::from(remaining.subsec_nanos() > 0);
+    let minutes = (seconds + 59) / 60;
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if minutes < 60 {
+        format!("{minutes}m")
+    } else {
+        format!("{}h {:02}m", minutes / 60, minutes % 60)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Schedule, TRACK_START, prayer_position, progress_position};
+    use super::{Schedule, TRACK_END, format_countdown, prayer_position, progress_position};
     use crate::prayer::{DHAKA_ID, city};
-    use chrono::{TimeZone, Utc};
+    use chrono::{TimeDelta, TimeZone, Utc};
 
     #[test]
-    fn timeline_dot_moves_between_prayers_and_wraps_for_fajr() {
+    fn progress_tracks_elapsed_time_and_extends_past_isha() {
         let noon = Utc.with_ymd_and_hms(2026, 11, 23, 6, 0, 0).unwrap();
         let schedule = Schedule::new(city(DHAKA_ID), noon);
         let today = schedule.today().unwrap();
@@ -277,13 +312,26 @@ mod tests {
 
         for (start, end, left, right) in [
             (fajr, dhuhr, prayer_position(0), prayer_position(1)),
-            (isha, next_fajr, TRACK_START, prayer_position(0)),
+            (isha, next_fajr, prayer_position(4), TRACK_END),
         ] {
             let half = start + (end - start) / 2;
-            let position =
-                |now| progress_position(&schedule, now, &schedule.next(now).unwrap()).unwrap();
+            let position = |now| {
+                progress_position(
+                    today,
+                    &schedule.previous(now).unwrap(),
+                    &schedule.next(now).unwrap(),
+                    now,
+                )
+            };
             assert!((position(start) - left).abs() < 0.001);
             assert!((position(half) - (left + right) / 2.0).abs() < 0.001);
         }
+    }
+
+    #[test]
+    fn countdown_displays_hours_minutes_and_the_final_seconds() {
+        assert_eq!(format_countdown(TimeDelta::minutes(62)), "1h 02m");
+        assert_eq!(format_countdown(TimeDelta::seconds(61)), "2m");
+        assert_eq!(format_countdown(TimeDelta::milliseconds(100)), "1s");
     }
 }
