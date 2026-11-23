@@ -16,7 +16,6 @@ const PURPLE: u32 = 0xcf8fec;
 const MUTED: u32 = 0xa7a2ae;
 const CONTROL: u32 = 0x222126;
 const RING_SIZE: f32 = 112.0;
-const PICKER_TOP: f32 = 43.0;
 const PICKER_HEIGHT: f32 = 22.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -257,7 +256,7 @@ impl Notch {
                             .text_color(rgb(0xebc9fa))
                             .text_size(px(9.0))
                             .line_height(px(15.0))
-                            .child(format!("Pomodoro {}/{}", timer.round(), ROUNDS)),
+                            .child(format!("{}/{}", timer.round(), ROUNDS)),
                     ),
             )
             .child(
@@ -268,6 +267,7 @@ impl Notch {
                     .h(px(116.0))
                     .flex()
                     .flex_col()
+                    .justify_center()
                     .when(self.pomodoro.menu_open, |panel| {
                         panel.child(self.pomodoro_picker_menu(cx))
                     })
@@ -282,13 +282,6 @@ impl Notch {
                                     .line_height(px(22.0))
                                     .child(tomato(17.0))
                                     .child("Pomodoro"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(10.0))
-                                    .line_height(px(14.0))
-                                    .text_color(rgb(MUTED))
-                                    .child("Focus · Work · Rest · Repeat"),
                             )
                             .child(
                                 div()
@@ -311,7 +304,8 @@ impl Notch {
                                             .border_1()
                                             .border_color(rgb(color))
                                             .when(round <= timer.round(), |dot| dot.bg(rgb(color)))
-                                    })),
+                                    }))
+                                    .child(self.pomodoro_picker_toggle(cx)),
                             )
                             .child(
                                 div()
@@ -334,9 +328,7 @@ impl Notch {
                                     )
                                     .child(
                                         secondary_button("pomodoro-stop", self.pomodoro.in_cycle())
-                                            .child(
-                                                div().size(px(9.0)).rounded_sm().bg(rgb(0xffffff)),
-                                            )
+                                            .child(div().size(px(9.0)).bg(rgb(0xffffff)))
                                             .on_click(cx.listener(|notch, _, _, cx| {
                                                 if notch.pomodoro.in_cycle() {
                                                     notch.pomodoro_action(Action::Stop, cx);
@@ -359,7 +351,6 @@ impl Notch {
                                         ),
                                     ),
                             )
-                            .child(self.pomodoro_picker_toggle(cx))
                     }),
             )
     }
@@ -369,9 +360,8 @@ impl Notch {
         let selected = self.pomodoro.label.as_ref().or_else(|| names.first());
         div()
             .id("pomodoro-picker-toggle")
-            .absolute()
-            .top(px(PICKER_TOP))
-            .right(px(0.0))
+            .ml_auto()
+            .flex_none()
             .w(px(116.0))
             .h(px(PICKER_HEIGHT))
             .px(px(6.0))
