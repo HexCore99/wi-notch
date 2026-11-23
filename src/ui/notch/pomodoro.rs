@@ -7,7 +7,6 @@ use gpui::{prelude::*, *};
 
 use super::{Mode, Notch, PAGE_BODY_WIDTH, Page, SettingsPage};
 use crate::{
-    appearance::DEFAULT_POMODORO_LABEL,
     icons::{TOMATO_RED, tomato},
     windows::audio::play_system_sound,
 };
@@ -269,191 +268,222 @@ impl Notch {
                     .h(px(116.0))
                     .flex()
                     .flex_col()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .text_size(px(20.0))
-                            .line_height(px(22.0))
-                            .child(tomato(17.0))
-                            .child("Pomodoro"),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .line_height(px(14.0))
-                            .text_color(rgb(MUTED))
-                            .child("Focus · Work · Rest · Repeat"),
-                    )
-                    .child(
-                        div()
-                            .mt(px(7.0))
-                            .h(px(PICKER_HEIGHT))
-                            .flex()
-                            .items_center()
-                            .gap(px(5.0))
-                            .children((1..=ROUNDS).map(|round| {
-                                let color = if round <= timer.completed_rounds {
-                                    0x8e60a8
-                                } else if round == timer.round() {
-                                    PURPLE
-                                } else {
-                                    0x68656d
-                                };
+                    .when(self.pomodoro.menu_open, |panel| {
+                        panel.child(self.pomodoro_picker_menu(cx))
+                    })
+                    .when(!self.pomodoro.menu_open, |panel| {
+                        panel
+                            .child(
                                 div()
-                                    .size(px(8.0))
-                                    .rounded_full()
-                                    .border_1()
-                                    .border_color(rgb(color))
-                                    .when(round <= timer.round(), |dot| dot.bg(rgb(color)))
-                            })),
-                    )
-                    .child(
-                        div()
-                            .mt(px(9.0))
-                            .flex()
-                            .gap(px(7.0))
-                            .child(
-                                timer_button("pomodoro-start-pause")
-                                    .flex_1()
+                                    .flex()
+                                    .items_center()
                                     .gap(px(6.0))
-                                    .bg(rgb(0x8144b8))
-                                    .cursor_pointer()
-                                    .hover(|button| button.bg(rgb(0x9657cc)))
-                                    .text_size(px(13.0))
-                                    .child(div().text_size(px(10.0)).child(symbol))
-                                    .child(action)
-                                    .on_click(cx.listener(|notch, _, _, cx| {
-                                        notch.pomodoro_action(Action::Toggle, cx);
+                                    .text_size(px(20.0))
+                                    .line_height(px(22.0))
+                                    .child(tomato(17.0))
+                                    .child("Pomodoro"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .line_height(px(14.0))
+                                    .text_color(rgb(MUTED))
+                                    .child("Focus · Work · Rest · Repeat"),
+                            )
+                            .child(
+                                div()
+                                    .mt(px(7.0))
+                                    .h(px(PICKER_HEIGHT))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(5.0))
+                                    .children((1..=ROUNDS).map(|round| {
+                                        let color = if round <= timer.completed_rounds {
+                                            0x8e60a8
+                                        } else if round == timer.round() {
+                                            PURPLE
+                                        } else {
+                                            0x68656d
+                                        };
+                                        div()
+                                            .size(px(8.0))
+                                            .rounded_full()
+                                            .border_1()
+                                            .border_color(rgb(color))
+                                            .when(round <= timer.round(), |dot| dot.bg(rgb(color)))
                                     })),
                             )
                             .child(
-                                secondary_button("pomodoro-stop", self.pomodoro.in_cycle())
-                                    .child(div().size(px(9.0)).rounded_sm().bg(rgb(0xffffff)))
-                                    .on_click(cx.listener(|notch, _, _, cx| {
-                                        if notch.pomodoro.in_cycle() {
-                                            notch.pomodoro_action(Action::Stop, cx);
-                                        }
-                                    })),
+                                div()
+                                    .mt(px(9.0))
+                                    .flex()
+                                    .gap(px(7.0))
+                                    .child(
+                                        timer_button("pomodoro-start-pause")
+                                            .flex_1()
+                                            .gap(px(6.0))
+                                            .bg(rgb(0x8144b8))
+                                            .cursor_pointer()
+                                            .hover(|button| button.bg(rgb(0x9657cc)))
+                                            .text_size(px(13.0))
+                                            .child(div().text_size(px(10.0)).child(symbol))
+                                            .child(action)
+                                            .on_click(cx.listener(|notch, _, _, cx| {
+                                                notch.pomodoro_action(Action::Toggle, cx);
+                                            })),
+                                    )
+                                    .child(
+                                        secondary_button("pomodoro-stop", self.pomodoro.in_cycle())
+                                            .child(
+                                                div().size(px(9.0)).rounded_sm().bg(rgb(0xffffff)),
+                                            )
+                                            .on_click(cx.listener(|notch, _, _, cx| {
+                                                if notch.pomodoro.in_cycle() {
+                                                    notch.pomodoro_action(Action::Stop, cx);
+                                                }
+                                            })),
+                                    )
+                                    .child(
+                                        secondary_button(
+                                            "pomodoro-reset",
+                                            self.pomodoro.in_cycle(),
+                                        )
+                                        .text_size(px(19.0))
+                                        .child("↺")
+                                        .on_click(
+                                            cx.listener(|notch, _, _, cx| {
+                                                if notch.pomodoro.in_cycle() {
+                                                    notch.pomodoro_action(Action::Reset, cx);
+                                                }
+                                            }),
+                                        ),
+                                    ),
                             )
-                            .child(
-                                secondary_button("pomodoro-reset", self.pomodoro.in_cycle())
-                                    .text_size(px(19.0))
-                                    .child("↺")
-                                    .on_click(cx.listener(|notch, _, _, cx| {
-                                        if notch.pomodoro.in_cycle() {
-                                            notch.pomodoro_action(Action::Reset, cx);
-                                        }
-                                    })),
-                            ),
-                    )
-                    .child(self.pomodoro_picker(cx)),
+                            .child(self.pomodoro_picker_toggle(cx))
+                    }),
             )
     }
 
-    fn pomodoro_picker(&self, cx: &Context<Self>) -> Stateful<Div> {
-        let names = &self.appearance.read(cx).pomodoro_labels;
-        let default = names.first().map_or(DEFAULT_POMODORO_LABEL, String::as_str);
-        let selected = self.pomodoro.label.as_deref().unwrap_or(default);
+    fn pomodoro_picker_toggle(&self, cx: &Context<Self>) -> Stateful<Div> {
+        let names = &self.appearance.read(cx).pomodoro_session_names;
+        let selected = self.pomodoro.label.as_ref().or_else(|| names.first());
         div()
-            .id("pomodoro-picker")
+            .id("pomodoro-picker-toggle")
             .absolute()
             .top(px(PICKER_TOP))
             .right(px(0.0))
             .w(px(116.0))
+            .h(px(PICKER_HEIGHT))
+            .px(px(6.0))
             .flex()
-            .flex_col()
-            .items_end()
+            .items_center()
+            .gap(px(4.0))
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(0x45424c))
+            .bg(rgb(CONTROL))
+            .hover(|button| button.bg(rgb(0x302e35)))
+            .cursor_pointer()
+            .text_size(px(13.0))
+            .child(div().text_size(px(11.0)).text_color(rgb(MUTED)).child("☷"))
             .child(
                 div()
-                    .id("pomodoro-picker-toggle")
-                    .w(px(116.0))
-                    .h(px(PICKER_HEIGHT))
-                    .px(px(6.0))
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .children(selected.cloned()),
+            )
+            .child(div().text_color(rgb(MUTED)).child("⌄"))
+            .on_click(cx.listener(|notch, _, _, cx| {
+                notch.pomodoro.menu_open = true;
+                cx.notify();
+            }))
+    }
+
+    fn pomodoro_picker_menu(&self, cx: &Context<Self>) -> Stateful<Div> {
+        let names = &self.appearance.read(cx).pomodoro_session_names;
+        let selected = self.pomodoro.label.as_ref().or_else(|| names.first());
+        div()
+            .id("pomodoro-picker-menu")
+            .absolute()
+            .top(px(-5.0))
+            .right(px(0.0))
+            .w(px(136.0))
+            .h(px(116.0))
+            .flex()
+            .flex_col()
+            .rounded_md()
+            .overflow_hidden()
+            .occlude()
+            .bg(rgb(CONTROL))
+            .border_1()
+            .border_color(rgb(0x45424c))
+            .text_size(px(13.0))
+            .on_mouse_down_out(cx.listener(|notch, _, _, cx| notch.close_pomodoro_menu(cx)))
+            .child(
+                div()
+                    .h(px(26.0))
+                    .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(4.0))
-                    .rounded_md()
-                    .border_1()
+                    .justify_between()
+                    .pl(px(8.0))
+                    .pr(px(3.0))
+                    .border_b_1()
                     .border_color(rgb(0x45424c))
-                    .bg(rgb(CONTROL))
-                    .hover(|button| button.bg(rgb(0x302e35)))
-                    .cursor_pointer()
-                    .text_size(px(10.0))
-                    .child(div().text_color(rgb(MUTED)).child("☷"))
+                    .child("Sessions")
                     .child(
                         div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .child(selected.to_owned()),
-                    )
-                    .child(div().text_color(rgb(MUTED)).child("⌄"))
-                    .on_click(cx.listener(|notch, _, _, cx| {
-                        notch.pomodoro.menu_open = !notch.pomodoro.menu_open;
-                        cx.notify();
+                            .id("close-pomodoro-picker")
+                            .size(px(20.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_sm()
+                            .text_size(px(16.0))
+                            .text_color(rgb(MUTED))
+                            .cursor_pointer()
+                            .hover(|button| button.bg(rgb(0x36343c)))
+                            .child("×")
+                            .on_click(cx.listener(|notch, _, _, cx| {
+                                notch.close_pomodoro_menu(cx);
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .id("pomodoro-picker-names")
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .overflow_y_scroll()
+                    .when(names.is_empty(), |list| {
+                        list.child(
+                            div()
+                                .p(px(8.0))
+                                .text_color(rgb(MUTED))
+                                .child("No saved sessions"),
+                        )
+                    })
+                    .children(names.iter().enumerate().map(|(index, name)| {
+                        let row = picker_row(index, name)
+                            .when(Some(name) == selected, |row| row.text_color(rgb(PURPLE)));
+                        let name = name.clone();
+                        row.on_click(cx.listener(move |notch, _, _, cx| {
+                            notch.pomodoro.label = Some(name.clone());
+                            notch.close_pomodoro_menu(cx);
+                        }))
                     })),
             )
-            .when(self.pomodoro.menu_open, |picker| {
-                picker
-                    .w_full()
-                    .bottom(px(0.0))
-                    .on_mouse_down_out(cx.listener(|notch, _, _, cx| {
+            .child(
+                picker_row("add-pomodoro-name", "+ Add")
+                    .h(px(26.0))
+                    .border_t_1()
+                    .border_color(rgb(0x45424c))
+                    .on_click(cx.listener(|notch, _, _, cx| {
                         notch.close_pomodoro_menu(cx);
-                    }))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h(px(0.0))
-                            .w_full()
-                            .flex()
-                            .flex_col()
-                            .rounded_md()
-                            .overflow_hidden()
-                            .occlude()
-                            .bg(rgb(CONTROL))
-                            .border_1()
-                            .border_color(rgb(0x45424c))
-                            .child(
-                                div()
-                                    .id("pomodoro-picker-names")
-                                    .flex_1()
-                                    .min_h(px(0.0))
-                                    .overflow_y_scroll()
-                                    .children(
-                                        names
-                                            .iter()
-                                            .map(String::as_str)
-                                            .chain(names.is_empty().then_some(default))
-                                            .enumerate()
-                                            .map(|(index, name)| {
-                                                let name = name.to_owned();
-                                                picker_row(index, &name)
-                                                    .when(name == selected, |row| {
-                                                        row.text_color(rgb(PURPLE))
-                                                    })
-                                                    .on_click(cx.listener(
-                                                        move |notch, _, _, cx| {
-                                                            notch.pomodoro.label =
-                                                                Some(name.clone());
-                                                            notch.close_pomodoro_menu(cx);
-                                                        },
-                                                    ))
-                                            }),
-                                    ),
-                            )
-                            .child(
-                                picker_row("add-pomodoro-name", "+ Add")
-                                    .border_t_1()
-                                    .border_color(rgb(0x45424c))
-                                    .on_click(cx.listener(|notch, _, _, cx| {
-                                        notch.close_pomodoro_menu(cx);
-                                        notch.open_settings_page(Some(SettingsPage::Pomodoro), cx);
-                                    })),
-                            ),
-                    )
-            })
+                        notch.open_settings_page(Some(SettingsPage::Pomodoro), cx);
+                    })),
+            )
     }
 }
 
@@ -482,13 +512,11 @@ fn secondary_button(id: &'static str, enabled: bool) -> Stateful<Div> {
 fn picker_row(id: impl Into<ElementId>, label: &str) -> Stateful<Div> {
     div()
         .id(id)
-        .h(px(16.0))
-        .px(px(7.0))
+        .h(px(23.0))
+        .px(px(8.0))
         .flex_none()
         .flex()
         .items_center()
-        .text_size(px(10.0))
-        .line_height(px(13.0))
         .hover(|style| style.bg(rgb(0x36343c)))
         .cursor_pointer()
         .child(div().min_w(px(0.0)).truncate().child(label.to_owned()))

@@ -4,7 +4,7 @@ use super::{
     MUTED_TEXT,
     text_input::{TextChanged, TextInput},
 };
-use crate::appearance::{AppearanceSettings, DEFAULT_POMODORO_LABEL};
+use crate::appearance::AppearanceSettings;
 
 pub(super) struct PomodoroPage {
     settings: Entity<AppearanceSettings>,
@@ -34,19 +34,14 @@ impl PomodoroPage {
         }
         let mut settings = self.settings.read(cx).clone();
         let lower_name = name.to_lowercase();
-        if settings.pomodoro_labels.is_empty() {
-            settings
-                .pomodoro_labels
-                .push(DEFAULT_POMODORO_LABEL.to_owned());
-        }
         if settings
-            .pomodoro_labels
+            .pomodoro_session_names
             .iter()
             .any(|label| label.to_lowercase() == lower_name)
         {
             self.error = Some("That session name is already in the list.");
         } else {
-            settings.pomodoro_labels.push(name.to_owned());
+            settings.pomodoro_session_names.push(name.to_owned());
             if let Err(error) = settings.save() {
                 eprintln!("Failed to save Pomodoro session name: {error}");
                 self.error = Some("Couldn’t save the session name. Try adding it again.");
@@ -65,6 +60,7 @@ impl PomodoroPage {
 impl Render for PomodoroPage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let can_add = !self.input.read(cx).value().trim().is_empty();
+        let names = &self.settings.read(cx).pomodoro_session_names;
         div()
             .flex()
             .flex_col()
@@ -112,5 +108,39 @@ impl Render for PomodoroPage {
                         .child(error),
                 )
             })
+            .child(
+                div()
+                    .mt(px(10.0))
+                    .text_size(px(12.0))
+                    .text_color(rgb(MUTED_TEXT))
+                    .child("Saved sessions"),
+            )
+            .child(
+                div()
+                    .id("saved-pomodoro-sessions")
+                    .max_h(px(280.0))
+                    .overflow_y_scroll()
+                    .rounded_md()
+                    .bg(rgb(0x28282a))
+                    .when(names.is_empty(), |list| {
+                        list.child(
+                            div()
+                                .px(px(12.0))
+                                .py(px(8.0))
+                                .text_color(rgb(MUTED_TEXT))
+                                .child("No saved sessions"),
+                        )
+                    })
+                    .children(names.iter().enumerate().map(|(index, name)| {
+                        div()
+                            .px(px(12.0))
+                            .py(px(8.0))
+                            .when(index > 0, |row| {
+                                row.border_t_1().border_color(rgb(0x303032))
+                            })
+                            .truncate()
+                            .child(name.clone())
+                    })),
+            )
     }
 }
