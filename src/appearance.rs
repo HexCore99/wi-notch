@@ -6,6 +6,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use crate::prayer::DHAKA_ID;
+
 pub const MIN_IDLE_COLLAPSE_DELAY_SECS: u32 = 5;
 pub const MAX_IDLE_COLLAPSE_DELAY_SECS: u32 = 300;
 
@@ -45,6 +47,7 @@ pub struct AppearanceSettings {
     pub auto_minimal: bool,
     pub always_minimal: bool,
     pub idle_collapse_delay_secs: u32,
+    pub prayer_city_id: u32,
 }
 
 impl Default for AppearanceSettings {
@@ -58,6 +61,7 @@ impl Default for AppearanceSettings {
             auto_minimal: false,
             always_minimal: false,
             idle_collapse_delay_secs: 20,
+            prayer_city_id: DHAKA_ID,
         }
     }
 }
@@ -124,6 +128,7 @@ mod tests {
             auto_minimal: false,
             always_minimal: false,
             idle_collapse_delay_secs: 20,
+            prayer_city_id: DHAKA_ID,
         };
 
         assert_eq!(AppearanceSettings::load_from(directory.path()), defaults);
@@ -149,6 +154,7 @@ mod tests {
         assert!(!settings.auto_minimal);
         assert!(!settings.always_minimal);
         assert_eq!(settings.idle_collapse_seconds(), 20);
+        assert_eq!(settings.prayer_city_id, DHAKA_ID);
         Ok(())
     }
 
@@ -173,6 +179,7 @@ mod tests {
             auto_minimal: true,
             always_minimal: true,
             idle_collapse_delay_secs: 45,
+            prayer_city_id: 5_128_581,
         };
 
         settings.save_to(&directory)?;

@@ -113,7 +113,7 @@ impl Render for GeneralPage {
                     div()
                         .text_size(px(11.0))
                         .text_color(rgb(MUTED_TEXT))
-                        .child("Hover over the strip to open the player."),
+                        .child("Hover over the strip to expand the notch."),
                 )
             });
 

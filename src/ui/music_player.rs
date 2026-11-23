@@ -145,7 +145,7 @@ impl Render for MusicPlayer {
         };
 
         div()
-            .w(px(300.0))
+            .w(px(super::notch::PAGE_BODY_WIDTH))
             .flex()
             .flex_col()
             .gap(px(7.0))
