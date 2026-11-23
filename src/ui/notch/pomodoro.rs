@@ -76,6 +76,12 @@ impl Timer {
         }
     }
 
+    fn progress(&self, now: Instant) -> f32 {
+        let duration = self.phase.duration();
+        let elapsed = duration.saturating_sub(self.remaining(now));
+        elapsed.as_secs() as f32 / duration.as_secs_f32()
+    }
+
     fn round(&self) -> u8 {
         match self.phase {
             Phase::Focus => self.completed_rounds + 1,
@@ -188,30 +194,23 @@ impl Notch {
     }
 
     pub(super) fn compact_pomodoro(&self, now: Instant) -> Div {
-        let timer = &self.pomodoro.timer;
         div()
+            .relative()
+            .size(px(24.0))
             .flex()
             .items_center()
-            .gap(px(6.0))
-            .child(tomato(15.0))
-            .child(
-                div()
-                    .text_size(px(15.0))
-                    .text_color(rgb(if matches!(timer.state, State::Running(_)) {
-                        0xffffff
-                    } else {
-                        0xd2b7dd
-                    }))
-                    .child(countdown(timer.remaining(now))),
-            )
+            .justify_center()
+            .child(progress_ring(
+                self.pomodoro.timer.progress(now),
+                px(2.0),
+                px(4.0),
+            ))
+            .child(tomato(13.0).top(px(-1.0)))
     }
 
     pub(super) fn pomodoro_panel(&self, now: Instant, cx: &Context<Self>) -> Div {
         let timer = &self.pomodoro.timer;
         let remaining = timer.remaining(now);
-        let duration = timer.phase.duration();
-        let elapsed = duration.saturating_sub(remaining);
-        let progress = elapsed.as_secs() as f32 / duration.as_secs_f32();
         let (symbol, action) = match timer.state {
             State::Running(_) => ("Ⅱ", "Pause"),
             State::Paused(_) => ("▶", "Resume"),
@@ -232,7 +231,7 @@ impl Notch {
                     .flex_col()
                     .items_center()
                     .justify_center()
-                    .child(progress_ring(progress))
+                    .child(progress_ring(timer.progress(now), px(5.0), px(10.0)))
                     .child(tomato(16.0))
                     .child(
                         div()
@@ -512,9 +511,7 @@ fn picker_row(id: impl Into<ElementId>, label: &str) -> Stateful<Div> {
         .child(div().min_w(px(0.0)).truncate().child(label.to_owned()))
 }
 
-fn progress_ring(progress: f32) -> impl IntoElement {
-    const STROKE: f32 = 5.0;
-    const MARKER_SIZE: f32 = 10.0;
+fn progress_ring(progress: f32, stroke: Pixels, marker_size: Pixels) -> impl IntoElement {
     div()
         .absolute()
         .top(px(0.0))
@@ -524,7 +521,7 @@ fn progress_ring(progress: f32) -> impl IntoElement {
             div()
                 .size_full()
                 .rounded_full()
-                .border(px(STROKE))
+                .border(stroke)
                 .border_color(rgb(if progress >= 1.0 {
                     TOMATO_RED
                 } else {
@@ -536,7 +533,7 @@ fn progress_ring(progress: f32) -> impl IntoElement {
                 |_, _, _| {},
                 move |bounds, (), window, _| {
                     let center = bounds.center();
-                    let radius = px((RING_SIZE - STROKE) / 2.0);
+                    let radius = (bounds.size.width - stroke) / 2.0;
                     let angle = progress * TAU;
                     let start = point(center.x, center.y - radius);
                     let marker = point(
@@ -545,19 +542,17 @@ fn progress_ring(progress: f32) -> impl IntoElement {
                     );
                     let color = rgb(TOMATO_RED);
                     if progress > 0.0 && progress < 1.0 {
-                        let mut arc = PathBuilder::stroke(px(STROKE));
+                        let mut arc = PathBuilder::stroke(stroke);
                         arc.move_to(start);
                         arc.arc_to(point(radius, radius), px(0.0), progress > 0.5, true, marker);
                         if let Ok(path) = arc.build() {
                             window.paint_path(path, color);
                         }
                     }
-                    for (center, diameter) in [(start, STROKE), (marker, MARKER_SIZE)] {
-                        let radius = px(diameter / 2.0);
-                        let bounds = Bounds::new(
-                            center - point(radius, radius),
-                            size(px(diameter), px(diameter)),
-                        );
+                    for (center, diameter) in [(start, stroke), (marker, marker_size)] {
+                        let radius = diameter / 2.0;
+                        let bounds =
+                            Bounds::new(center - point(radius, radius), size(diameter, diameter));
                         window.paint_quad(fill(bounds, color).corner_radii(radius));
                     }
                 },

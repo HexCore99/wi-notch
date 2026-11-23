@@ -884,7 +884,21 @@ impl Render for Notch {
             if let Some((schedule, now)) = prayer {
                 header.child(prayer_times::header(schedule, now).opacity(player_opacity))
             } else if self.mode == Mode::Compact && self.pomodoro.in_cycle() {
-                header.child(self.compact_pomodoro(now))
+                header
+                    .relative()
+                    .w_full()
+                    .justify_center()
+                    .child(self.clock.clone())
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(10.0))
+                            .top(px(0.0))
+                            .bottom(px(0.0))
+                            .flex()
+                            .items_center()
+                            .child(self.compact_pomodoro(now)),
+                    )
             } else {
                 header
                     .gap(px(8.0 * date_opacity))
