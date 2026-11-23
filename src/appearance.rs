@@ -10,6 +10,7 @@ use crate::prayer::DHAKA_ID;
 
 pub const MIN_IDLE_COLLAPSE_DELAY_SECS: u32 = 5;
 pub const MAX_IDLE_COLLAPSE_DELAY_SECS: u32 = 300;
+pub const DEFAULT_POMODORO_LABEL: &str = "Study (DSA)";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -48,6 +49,7 @@ pub struct AppearanceSettings {
     pub always_minimal: bool,
     pub idle_collapse_delay_secs: u32,
     pub prayer_city_id: u32,
+    pub pomodoro_labels: Vec<String>,
 }
 
 impl Default for AppearanceSettings {
@@ -62,6 +64,7 @@ impl Default for AppearanceSettings {
             always_minimal: false,
             idle_collapse_delay_secs: 20,
             prayer_city_id: DHAKA_ID,
+            pomodoro_labels: vec![DEFAULT_POMODORO_LABEL.to_owned()],
         }
     }
 }
@@ -129,6 +132,7 @@ mod tests {
             always_minimal: false,
             idle_collapse_delay_secs: 20,
             prayer_city_id: DHAKA_ID,
+            pomodoro_labels: vec![DEFAULT_POMODORO_LABEL.to_owned()],
         };
 
         assert_eq!(AppearanceSettings::load_from(directory.path()), defaults);
@@ -155,6 +159,7 @@ mod tests {
         assert!(!settings.always_minimal);
         assert_eq!(settings.idle_collapse_seconds(), 20);
         assert_eq!(settings.prayer_city_id, DHAKA_ID);
+        assert_eq!(settings.pomodoro_labels, [DEFAULT_POMODORO_LABEL]);
         Ok(())
     }
 
@@ -180,6 +185,7 @@ mod tests {
             always_minimal: true,
             idle_collapse_delay_secs: 45,
             prayer_city_id: 5_128_581,
+            pomodoro_labels: vec![DEFAULT_POMODORO_LABEL.to_owned(), "Work".to_owned()],
         };
 
         settings.save_to(&directory)?;

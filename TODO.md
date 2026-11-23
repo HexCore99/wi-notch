@@ -2,3 +2,4 @@
 - [] Material design to Music Player Progress bar.
 - [] Add Sound control
 - [x] not expanding on hover
+- [] show a notification 10 minute before prayer and at the right time of the prayer

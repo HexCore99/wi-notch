@@ -1,8 +1,6 @@
-mod search_input;
-
 use gpui::{prelude::*, *};
 
-use self::search_input::{SearchChanged, SearchInput};
+use super::text_input::{TextChanged, TextInput};
 use super::{
     CONTROL_BACKGROUND, CONTROL_HOVER, MUTED_TEXT, save_error, setting_group, setting_row,
     update_settings,
@@ -12,7 +10,7 @@ use crate::prayer::{City, city, search_cities};
 
 pub(super) struct PrayerPage {
     settings: Entity<AppearanceSettings>,
-    search: Entity<SearchInput>,
+    search: Entity<TextInput>,
     results: Vec<&'static City>,
     results_scroll: ScrollHandle,
     save_failed: bool,
@@ -20,8 +18,8 @@ pub(super) struct PrayerPage {
 
 impl PrayerPage {
     pub(super) fn new(settings: Entity<AppearanceSettings>, cx: &mut Context<Self>) -> Self {
-        let search = cx.new(SearchInput::new);
-        cx.subscribe(&search, |page, search, _: &SearchChanged, cx| {
+        let search = cx.new(|cx| TextInput::new("search-prayer-cities", "Search for a city…", cx));
+        cx.subscribe(&search, |page, search, _: &TextChanged, cx| {
             page.results = search_cities(search.read(cx).value(), 30);
             page.results_scroll.set_offset(point(px(0.0), px(0.0)));
             cx.notify();

@@ -1,3 +1,5 @@
+mod pomodoro;
+
 use std::{
     collections::HashSet,
     time::{Duration, Instant},
@@ -9,7 +11,7 @@ use super::notifications::{
     Notifications, PREVIEW_HEIGHT, render_artwork, render_icon, render_icon_pixels,
 };
 use super::prayer_times;
-use super::settings::SettingsView;
+use super::settings::{Page as SettingsPage, SettingsView};
 use super::volume::{VOLUME_HUD_SIZE, VolumeFeedback, volume_bar};
 use crate::appearance::{AppearanceSettings, Corners};
 use crate::notch_geometry::{COLLAPSED_SIZE, EXPANDED_SIZE};
@@ -24,6 +26,7 @@ use crate::windows::notifications::{
 };
 use chrono::{Local, Utc};
 use gpui::{prelude::*, *};
+use pomodoro::Pomodoro;
 
 const DATE_REVEAL_SECONDS: f32 = 0.38;
 const PAGE_ARROW_WIDTH: f32 = 24.0;
@@ -34,13 +37,21 @@ pub(super) const PAGE_BODY_WIDTH: f32 = EXPANDED_SIZE.0 - PAGE_ARROW_WIDTH * 2.0
 enum Page {
     Music,
     PrayerTimes,
+    Pomodoro,
 }
 
 impl Page {
-    fn other(self) -> Self {
-        match self {
-            Self::Music => Self::PrayerTimes,
-            Self::PrayerTimes => Self::Music,
+    fn neighbor(self, direction: PageDirection) -> Self {
+        match (self, direction) {
+            (Self::Music, PageDirection::Right) | (Self::Pomodoro, PageDirection::Left) => {
+                Self::PrayerTimes
+            }
+            (Self::PrayerTimes, PageDirection::Right) | (Self::Music, PageDirection::Left) => {
+                Self::Pomodoro
+            }
+            (Self::Pomodoro, PageDirection::Right) | (Self::PrayerTimes, PageDirection::Left) => {
+                Self::Music
+            }
         }
     }
 }
@@ -67,7 +78,7 @@ pub struct Notch {
     page: Page,
     target_size: (f32, f32),
     animation: Option<SizeAnimation>,
-    page_switch: Option<(Instant, PageDirection)>,
+    page_switch: Option<(Instant, PageDirection, Page)>,
     date_reveal: f32,
     date_reveal_frame: Option<Instant>,
     volume_stretch: f32,
@@ -83,6 +94,7 @@ pub struct Notch {
     music_player: Entity<MusicPlayer>,
     prayer_schedule: Option<Schedule>,
     prayer_refresh: Option<Task<()>>,
+    pomodoro: Pomodoro,
     volume_feedback: VolumeFeedback,
     volume_keys: Option<VolumeKeyWatch>,
     notifications: Notifications,
@@ -227,6 +239,7 @@ impl Notch {
             music_player: cx.new(|_| MusicPlayer::default()),
             prayer_schedule: None,
             prayer_refresh: None,
+            pomodoro: Pomodoro::default(),
             volume_feedback: VolumeFeedback::default(),
             volume_keys: VolumeKeyWatch::start()
                 .inspect_err(|error| eprintln!("Failed to watch volume keys: {error}"))
@@ -278,6 +291,9 @@ impl Notch {
             });
         }
         self.mode = mode;
+        if mode != Mode::Expanded(Page::Pomodoro) {
+            self.close_pomodoro_menu(cx);
+        }
         if !matches!(mode, Mode::Expanded(_)) {
             self.page_switch = None;
         }
@@ -292,6 +308,7 @@ impl Notch {
         if self.mode == Mode::Compact
             && !self.hovered
             && !self.playing
+            && !self.pomodoro.in_cycle()
             && self.appearance.read(cx).auto_minimal
         {
             self.idle_since.get_or_insert_with(Instant::now);
@@ -313,7 +330,9 @@ impl Notch {
             return;
         }
 
-        if self.mode == Mode::Collapsed && (was_always_minimal || !auto_minimal || self.playing) {
+        if self.mode == Mode::Collapsed
+            && (was_always_minimal || !auto_minimal || self.playing || self.pomodoro.in_cycle())
+        {
             self.set_mode(self.hover_mode(), cx);
         }
 
@@ -339,8 +358,9 @@ impl Notch {
         if self.page_switch.is_some() || !matches!(self.mode, Mode::Expanded(_)) {
             return;
         }
-        self.page = self.page.other();
-        self.page_switch = Some((Instant::now(), direction));
+        let previous = self.page;
+        self.page = self.page.neighbor(direction);
+        self.page_switch = Some((Instant::now(), direction, previous));
         self.set_mode(Mode::Expanded(self.page), cx);
     }
 
@@ -619,15 +639,23 @@ impl Notch {
     }
 
     fn open_settings(&mut self, cx: &mut Context<Self>) {
+        let page = match self.mode {
+            Mode::Expanded(Page::PrayerTimes) => Some(SettingsPage::PrayerTimes),
+            Mode::Expanded(Page::Pomodoro) => Some(SettingsPage::Pomodoro),
+            _ => None,
+        };
+        self.open_settings_page(page, cx);
+    }
+
+    fn open_settings_page(&mut self, page: Option<SettingsPage>, cx: &mut Context<Self>) {
         if self.page_switch.take().is_some() {
             cx.notify();
         }
-        let prayer_times = self.mode == Mode::Expanded(Page::PrayerTimes);
         if let Some(handle) = self.settings_window
             && handle
                 .update(cx, |view, window, cx| {
-                    if prayer_times {
-                        view.show_prayer_times(cx);
+                    if let Some(page) = page {
+                        view.show_page(page, cx);
                     }
                     window.activate_window();
                 })
@@ -636,7 +664,11 @@ impl Notch {
             return;
         }
 
-        self.settings_window = match SettingsView::open(self.appearance.clone(), prayer_times, cx) {
+        self.settings_window = match SettingsView::open(
+            self.appearance.clone(),
+            page.unwrap_or(SettingsPage::General),
+            cx,
+        ) {
             Ok(handle) => Some(handle),
             Err(error) => {
                 eprintln!("Failed to open settings: {error}");
@@ -679,25 +711,25 @@ impl Render for Notch {
             self.update_idle_start(cx);
         }
 
-        let page_transition = self
-            .page_switch
-            .and_then(|(started, direction)| page_transition_frame(started.elapsed(), direction));
+        let now = Instant::now();
+        let page_transition = self.page_switch.and_then(|(started, direction, previous)| {
+            page_transition_frame(now.saturating_duration_since(started), direction)
+                .map(|frame| (frame, previous))
+        });
         if page_transition.is_none() {
             self.page_switch = None;
         }
-        let visible_page = match self.mode {
-            Mode::Expanded(page)
-                if page_transition
-                    .as_ref()
-                    .is_some_and(|frame| !frame.incoming) =>
-            {
-                Some(page.other())
-            }
-            Mode::Expanded(page) => Some(page),
+        let visible_page = match (self.mode, &page_transition) {
+            (Mode::Expanded(_), Some((frame, previous))) if !frame.incoming => Some(*previous),
+            (Mode::Expanded(page), _) => Some(page),
             _ => None,
         };
-        let page_opacity = page_transition.as_ref().map_or(1.0, |frame| frame.opacity);
-        let page_offset = px(page_transition.as_ref().map_or(0.0, |frame| frame.offset_x));
+        let page_opacity = page_transition
+            .as_ref()
+            .map_or(1.0, |(frame, _)| frame.opacity);
+        let page_offset = px(page_transition
+            .as_ref()
+            .map_or(0.0, |(frame, _)| frame.offset_x));
 
         let settings = self.appearance.read(cx);
         let background = settings.background.color();
@@ -851,6 +883,8 @@ impl Render for Notch {
             });
             if let Some((schedule, now)) = prayer {
                 header.child(prayer_times::header(schedule, now).opacity(player_opacity))
+            } else if self.mode == Mode::Compact && self.pomodoro.in_cycle() {
+                header.child(self.compact_pomodoro(now))
             } else {
                 header
                     .gap(px(8.0 * date_opacity))
@@ -888,6 +922,17 @@ impl Render for Notch {
                 |notch, (schedule, now)| {
                     notch.child(
                         prayer_times::panel(schedule, now, background)
+                            .relative()
+                            .left(page_offset)
+                            .opacity(content_opacity),
+                    )
+                },
+            )
+            .when(
+                visible_page == Some(Page::Pomodoro) && content_opacity > 0.0,
+                |notch| {
+                    notch.child(
+                        self.pomodoro_panel(now, cx)
                             .relative()
                             .left(page_offset)
                             .opacity(content_opacity),
