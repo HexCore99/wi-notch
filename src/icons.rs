@@ -2,6 +2,8 @@ use std::borrow::Cow;
 
 use gpui::{AssetSource, Div, SharedString, div, prelude::*, px, rgb, svg};
 
+pub(crate) const TOMATO_RED: u32 = 0xff5846;
+
 pub(crate) struct Icons;
 
 impl AssetSource for Icons {
@@ -31,7 +33,7 @@ pub(crate) fn tomato(size: f32) -> Div {
             svg()
                 .path("tomato.svg")
                 .size_full()
-                .text_color(rgb(0xff5846)),
+                .text_color(rgb(TOMATO_RED)),
         )
         .child(
             svg()
