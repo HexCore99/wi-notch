@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use ::windows::Win32::{
     Foundation::{LPARAM, LRESULT, WPARAM},
     Media::Audio::{
-        Endpoints::IAudioEndpointVolume, IMMDeviceEnumerator, MMDeviceEnumerator, eMultimedia,
-        eRender,
+        Endpoints::IAudioEndpointVolume, IMMDeviceEnumerator, MMDeviceEnumerator, PlaySoundW,
+        SND_ALIAS, SND_ASYNC, SND_SYSTEM, eMultimedia, eRender,
     },
     System::{
         Com::{
@@ -36,6 +36,16 @@ pub struct OutputVolume {
 const VOLUME_UP: u8 = 1;
 const VOLUME_DOWN: u8 = 2;
 static PRESSED_VOLUME_KEYS: AtomicU8 = AtomicU8::new(0);
+
+pub fn play_system_sound() {
+    unsafe {
+        let _ = PlaySoundW(
+            ::windows::core::w!("SystemAsterisk"),
+            None,
+            SND_ALIAS | SND_ASYNC | SND_SYSTEM,
+        );
+    }
+}
 
 #[derive(Default)]
 pub struct VolumeKeyPresses {

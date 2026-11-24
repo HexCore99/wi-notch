@@ -1,18 +1,16 @@
-mod search_input;
-
 use gpui::{prelude::*, *};
 
-use self::search_input::{SearchChanged, SearchInput};
+use super::text_input::{TextChanged, TextInput};
 use super::{
     CONTROL_BACKGROUND, CONTROL_HOVER, MUTED_TEXT, save_error, setting_group, setting_row,
-    update_settings,
+    setting_switch, update_settings,
 };
 use crate::appearance::AppearanceSettings;
 use crate::prayer::{City, city, search_cities};
 
 pub(super) struct PrayerPage {
     settings: Entity<AppearanceSettings>,
-    search: Entity<SearchInput>,
+    search: Entity<TextInput>,
     results: Vec<&'static City>,
     results_scroll: ScrollHandle,
     save_failed: bool,
@@ -20,8 +18,8 @@ pub(super) struct PrayerPage {
 
 impl PrayerPage {
     pub(super) fn new(settings: Entity<AppearanceSettings>, cx: &mut Context<Self>) -> Self {
-        let search = cx.new(SearchInput::new);
-        cx.subscribe(&search, |page, search, _: &SearchChanged, cx| {
+        let search = cx.new(|cx| TextInput::new("search-prayer-cities", "Search for a city…", cx));
+        cx.subscribe(&search, |page, search, _: &TextChanged, cx| {
             page.results = search_cities(search.read(cx).value(), 30);
             page.results_scroll.set_offset(point(px(0.0), px(0.0)));
             cx.notify();
@@ -37,21 +35,20 @@ impl PrayerPage {
     }
 
     fn select(&mut self, city: &City, cx: &mut Context<Self>) {
-        self.save_failed = update_settings(
-            &self.settings,
-            |settings| {
-                settings.prayer_city_id = city.id;
-            },
-            cx,
-        )
-        .is_err();
+        self.update(|settings| settings.prayer_city_id = city.id, cx);
+    }
+
+    fn update(&mut self, change: impl FnOnce(&mut AppearanceSettings), cx: &mut Context<Self>) {
+        self.save_failed = update_settings(&self.settings, change, cx).is_err();
         cx.notify();
     }
 }
 
 impl Render for PrayerPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let selected = city(self.settings.read(cx).prayer_city_id);
+        let settings = self.settings.read(cx);
+        let selected = city(settings.prayer_city_id);
+        let reminders = settings.prayer_reminders;
         let city_label = format!("{}, {}", selected.name, selected.country);
         let empty_query = self.search.read(cx).value().trim().is_empty();
         let popular;
@@ -98,11 +95,44 @@ impl Render for PrayerPage {
                     ),
                 ],
             ))
+            .child(setting_group(
+                "Reminders",
+                [
+                    setting_row(
+                        "10 minutes before",
+                        setting_switch("prayer-reminder-before", reminders.before).on_click(
+                            cx.listener(|page, _, _, cx| {
+                                page.update(
+                                    |settings| {
+                                        settings.prayer_reminders.before =
+                                            !settings.prayer_reminders.before;
+                                    },
+                                    cx,
+                                );
+                            }),
+                        ),
+                    ),
+                    setting_row(
+                        "When prayer starts",
+                        setting_switch("prayer-reminder-start", reminders.at_start).on_click(
+                            cx.listener(|page, _, _, cx| {
+                                page.update(
+                                    |settings| {
+                                        settings.prayer_reminders.at_start =
+                                            !settings.prayer_reminders.at_start;
+                                    },
+                                    cx,
+                                );
+                            }),
+                        ),
+                    ),
+                ],
+            ))
             .child(self.search.clone())
             .child(
                 div()
                     .id("prayer-city-results")
-                    .h(px(288.0))
+                    .h(px(if self.save_failed { 168.0 } else { 196.0 }))
                     .overflow_y_scroll()
                     .track_scroll(&self.results_scroll)
                     .rounded_xl()

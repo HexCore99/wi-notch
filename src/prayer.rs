@@ -1,8 +1,12 @@
+mod reminders;
+
 use std::sync::OnceLock;
 
 use adhan::{Madhab, Method, Parameters, Prayer, prayer_times};
 use chrono::{DateTime, Datelike, NaiveDate, TimeDelta, Utc};
 use chrono_tz::Tz;
+
+pub use reminders::{PrayerReminder, PrayerReminders, ReminderSettings};
 
 pub const DHAKA_ID: u32 = 1_185_241;
 
@@ -117,6 +121,7 @@ pub const PRAYERS: [Prayer; 5] = [
     Prayer::Maghrib,
     Prayer::Isha,
 ];
+pub const PRAYER_NAMES: [&str; PRAYERS.len()] = ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"];
 
 pub struct DaySchedule {
     pub date: NaiveDate,

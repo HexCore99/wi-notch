@@ -1,15 +1,19 @@
 mod appearance;
 mod display;
 mod general;
+mod pomodoro;
 mod prayer;
+mod text_input;
 
 use appearance::AppearancePage;
 use display::DisplayPage;
 use general::GeneralPage;
 use gpui::{prelude::*, *};
+use pomodoro::PomodoroPage;
 use prayer::PrayerPage;
 
 use crate::appearance::AppearanceSettings;
+use crate::icons::tomato;
 use crate::windows::window::remove_window_border;
 
 const CONTROL_BACKGROUND: u32 = 0x3a3a3c;
@@ -17,11 +21,12 @@ const CONTROL_HOVER: u32 = 0x4a4a4d;
 const MUTED_TEXT: u32 = 0xa8a8aa;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Page {
+pub(super) enum Page {
     General,
     Appearance,
     Display,
     PrayerTimes,
+    Pomodoro,
 }
 
 impl Page {
@@ -31,6 +36,7 @@ impl Page {
             Self::Appearance => "Appearance",
             Self::Display => "Display",
             Self::PrayerTimes => "Prayer Times",
+            Self::Pomodoro => "Pomodoro",
         }
     }
 }
@@ -41,12 +47,13 @@ pub struct SettingsView {
     appearance_page: Entity<AppearancePage>,
     display_page: Entity<DisplayPage>,
     prayer_page: Entity<PrayerPage>,
+    pomodoro_page: Entity<PomodoroPage>,
 }
 
 impl SettingsView {
     pub fn open(
         appearance: Entity<AppearanceSettings>,
-        prayer_times: bool,
+        page: Page,
         cx: &mut App,
     ) -> Result<WindowHandle<Self>> {
         cx.open_window(
@@ -66,22 +73,19 @@ impl SettingsView {
                     eprintln!("Failed to remove the Settings window border: {error}");
                 }
                 cx.new(|cx| Self {
-                    page: if prayer_times {
-                        Page::PrayerTimes
-                    } else {
-                        Page::General
-                    },
+                    page,
                     general_page: cx.new(|_| GeneralPage::new(appearance.clone())),
                     appearance_page: cx.new(|_| AppearancePage::new(appearance.clone())),
                     display_page: cx.new(|_| DisplayPage::new(appearance.clone())),
-                    prayer_page: cx.new(|cx| PrayerPage::new(appearance, cx)),
+                    prayer_page: cx.new(|cx| PrayerPage::new(appearance.clone(), cx)),
+                    pomodoro_page: cx.new(|cx| PomodoroPage::new(appearance, cx)),
                 })
             },
         )
     }
 
-    pub fn show_prayer_times(&mut self, cx: &mut Context<Self>) {
-        self.page = Page::PrayerTimes;
+    pub(super) fn show_page(&mut self, page: Page, cx: &mut Context<Self>) {
+        self.page = page;
         cx.notify();
     }
 
@@ -107,6 +111,7 @@ impl SettingsView {
                     .into_any_element(),
                 rgb(0x6b49a6),
             ),
+            Page::Pomodoro => (tomato(14.0).into_any_element(), rgb(0x4e2d4d)),
         };
         div()
             .id(page.title())
@@ -146,6 +151,7 @@ impl Render for SettingsView {
             Page::Appearance => self.appearance_page.clone().into_any_element(),
             Page::Display => self.display_page.clone().into_any_element(),
             Page::PrayerTimes => self.prayer_page.clone().into_any_element(),
+            Page::Pomodoro => self.pomodoro_page.clone().into_any_element(),
         };
         div()
             .size_full()
@@ -179,7 +185,8 @@ impl Render for SettingsView {
                     .child(self.sidebar_item(Page::General, cx))
                     .child(self.sidebar_item(Page::Appearance, cx))
                     .child(self.sidebar_item(Page::Display, cx))
-                    .child(self.sidebar_item(Page::PrayerTimes, cx)),
+                    .child(self.sidebar_item(Page::PrayerTimes, cx))
+                    .child(self.sidebar_item(Page::Pomodoro, cx)),
             )
             .child(
                 div()

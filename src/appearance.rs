@@ -5,8 +5,9 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-use crate::prayer::DHAKA_ID;
+use crate::prayer::{DHAKA_ID, ReminderSettings};
 
 pub const MIN_IDLE_COLLAPSE_DELAY_SECS: u32 = 5;
 pub const MAX_IDLE_COLLAPSE_DELAY_SECS: u32 = 300;
@@ -48,6 +49,8 @@ pub struct AppearanceSettings {
     pub always_minimal: bool,
     pub idle_collapse_delay_secs: u32,
     pub prayer_city_id: u32,
+    pub prayer_reminders: ReminderSettings,
+    pub pomodoro_session_names: Vec<String>,
 }
 
 impl Default for AppearanceSettings {
@@ -62,6 +65,8 @@ impl Default for AppearanceSettings {
             always_minimal: false,
             idle_collapse_delay_secs: 20,
             prayer_city_id: DHAKA_ID,
+            prayer_reminders: ReminderSettings::default(),
+            pomodoro_session_names: Vec::new(),
         }
     }
 }
@@ -86,10 +91,23 @@ impl AppearanceSettings {
     }
 
     fn load_from(directory: &Path) -> Self {
-        fs::read(directory.join("settings.json"))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+        let Ok(bytes) = fs::read(directory.join("settings.json")) else {
+            return Self::default();
+        };
+        let Ok(mut data) = serde_json::from_slice::<Value>(&bytes) else {
+            return Self::default();
+        };
+        if let Some(settings) = data.as_object_mut()
+            && !settings.contains_key("pomodoro_session_names")
+            && let Some(Value::Array(mut names)) = settings.remove("pomodoro_labels")
+        {
+            // The old list started with a built-in name, even before the user added one.
+            if names.first().and_then(Value::as_str) == Some("Study (DSA)") {
+                names.remove(0);
+            }
+            settings.insert("pomodoro_session_names".to_owned(), Value::Array(names));
+        }
+        serde_json::from_value(data).unwrap_or_default()
     }
 
     fn save_to(&self, directory: &Path) -> io::Result<()> {
@@ -129,6 +147,8 @@ mod tests {
             always_minimal: false,
             idle_collapse_delay_secs: 20,
             prayer_city_id: DHAKA_ID,
+            prayer_reminders: ReminderSettings::default(),
+            pomodoro_session_names: Vec::new(),
         };
 
         assert_eq!(AppearanceSettings::load_from(directory.path()), defaults);
@@ -155,6 +175,29 @@ mod tests {
         assert!(!settings.always_minimal);
         assert_eq!(settings.idle_collapse_seconds(), 20);
         assert_eq!(settings.prayer_city_id, DHAKA_ID);
+        assert_eq!(settings.prayer_reminders, ReminderSettings::default());
+        assert!(settings.pomodoro_session_names.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_pomodoro_settings_keep_custom_names_only() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let file = directory.path().join("settings.json");
+        fs::write(&file, r#"{"pomodoro_labels":["Study (DSA)"]}"#)?;
+        assert!(
+            AppearanceSettings::load_from(directory.path())
+                .pomodoro_session_names
+                .is_empty()
+        );
+
+        fs::write(
+            &file,
+            r#"{"background":"charcoal","pomodoro_labels":["Study (DSA)","Work","Reading"]}"#,
+        )?;
+        let settings = AppearanceSettings::load_from(directory.path());
+        assert_eq!(settings.pomodoro_session_names, ["Work", "Reading"]);
+        assert_eq!(settings.background, Background::Charcoal);
         Ok(())
     }
 
@@ -180,6 +223,11 @@ mod tests {
             always_minimal: true,
             idle_collapse_delay_secs: 45,
             prayer_city_id: 5_128_581,
+            prayer_reminders: ReminderSettings {
+                before: true,
+                at_start: false,
+            },
+            pomodoro_session_names: vec!["Study (DSA)".to_owned(), "Work".to_owned()],
         };
 
         settings.save_to(&directory)?;

@@ -1,7 +1,7 @@
 use chrono::{DateTime, TimeDelta, Utc};
 use gpui::{prelude::*, *};
 
-use crate::prayer::{DaySchedule, PRAYERS, Schedule};
+use crate::prayer::{DaySchedule, PRAYER_NAMES, PRAYERS, PrayerReminder, Schedule};
 
 use super::notch::PAGE_BODY_WIDTH;
 
@@ -11,7 +11,15 @@ const MUTED: u32 = 0xa7a198;
 const TRACK_START: f32 = 8.0;
 const TRACK_END: f32 = PAGE_BODY_WIDTH - TRACK_START;
 const MARKER_SIZE: f32 = 10.0;
-const PRAYER_NAMES: [&str; PRAYERS.len()] = ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"];
+
+pub(super) fn reminder_banner(reminder: PrayerReminder) -> Div {
+    div()
+        .max_w(px(248.0))
+        .truncate()
+        .text_size(px(14.0))
+        .text_color(rgb(GOLD))
+        .child(reminder.message())
+}
 
 pub(super) fn header(schedule: &Schedule, now: DateTime<Utc>) -> Div {
     let local = now.with_timezone(&schedule.city.zone);

@@ -2,10 +2,11 @@ use std::ops::Range;
 
 use gpui::{prelude::*, *};
 
-pub(super) struct SearchChanged;
+pub(super) struct TextChanged;
 
-/// A single-line GPUI text field for the city filter.
-pub(super) struct SearchInput {
+pub(super) struct TextInput {
+    id: &'static str,
+    placeholder: &'static str,
     focus: FocusHandle,
     value: String,
     anchor: usize,
@@ -14,11 +15,13 @@ pub(super) struct SearchInput {
     layout: Option<(ShapedLine, Bounds<Pixels>)>,
 }
 
-impl EventEmitter<SearchChanged> for SearchInput {}
+impl EventEmitter<TextChanged> for TextInput {}
 
-impl SearchInput {
-    pub(super) fn new(cx: &mut Context<Self>) -> Self {
+impl TextInput {
+    pub(super) fn new(id: &'static str, placeholder: &'static str, cx: &mut Context<Self>) -> Self {
         Self {
+            id,
+            placeholder,
             focus: cx.focus_handle(),
             value: String::new(),
             anchor: 0,
@@ -30,6 +33,10 @@ impl SearchInput {
 
     pub(super) fn value(&self) -> &str {
         &self.value
+    }
+
+    pub(super) fn clear(&mut self, cx: &mut Context<Self>) {
+        self.replace(0..self.value.len(), "", cx);
     }
 
     fn selection(&self) -> Range<usize> {
@@ -61,7 +68,7 @@ impl SearchInput {
         self.value.replace_range(range.clone(), &text);
         self.marked = None;
         self.move_to(end, false);
-        cx.emit(SearchChanged);
+        cx.emit(TextChanged);
         cx.notify();
         range.start..end
     }
@@ -133,7 +140,7 @@ impl SearchInput {
             (false, "home") => self.move_to(0, key.modifiers.shift),
             (false, "end") => self.move_to(self.value.len(), key.modifiers.shift),
             (false, "escape") => {
-                self.replace(0..self.value.len(), "", cx);
+                self.clear(cx);
             }
             _ => return,
         }
@@ -168,7 +175,7 @@ fn byte_range(text: &str, range: Range<usize>) -> Range<usize> {
     offset(text, range.start)..offset(text, range.end)
 }
 
-impl EntityInputHandler for SearchInput {
+impl EntityInputHandler for TextInput {
     fn text_for_range(
         &mut self,
         range: Range<usize>,
@@ -254,7 +261,7 @@ impl EntityInputHandler for SearchInput {
     }
 }
 
-impl Render for SearchInput {
+impl Render for TextInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus.is_focused(window);
         let focus = self.focus.clone();
@@ -263,12 +270,12 @@ impl Render for SearchInput {
         let cursor = self.cursor;
         let placeholder = self.value.is_empty();
         let display: SharedString = if placeholder {
-            "Search for a city…".into()
+            self.placeholder.into()
         } else {
             self.value.clone().into()
         };
         div()
-            .id("search-prayer-cities")
+            .id(self.id)
             .track_focus(&self.focus)
             .cursor(CursorStyle::IBeam)
             .rounded_md()
