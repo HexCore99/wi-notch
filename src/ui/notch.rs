@@ -110,7 +110,9 @@ impl Notch {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        cx.observe_in(&appearance, window, |this, _, window, cx| {
+        cx.observe_in(&appearance, window, |this, appearance, window, cx| {
+            this.pomodoro
+                .clear_removed_session(&appearance.read(cx).pomodoro_session_names);
             this.sync_idle_policy(cx);
             this.sync_placement(window, cx);
             cx.notify();

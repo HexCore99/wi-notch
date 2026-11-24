@@ -27,14 +27,6 @@ enum Phase {
 }
 
 impl Phase {
-    fn title(self) -> &'static str {
-        match self {
-            Self::Focus => "Focus",
-            Self::ShortBreak => "Short Break",
-            Self::LongBreak => "Long Break",
-        }
-    }
-
     fn duration(self) -> Duration {
         Duration::from_secs(match self {
             Self::Focus => 25 * 60,
@@ -137,6 +129,16 @@ impl Pomodoro {
     pub(super) fn in_cycle(&self) -> bool {
         self.timer.state != State::Idle
     }
+
+    pub(super) fn clear_removed_session(&mut self, names: &[String]) {
+        if self
+            .label
+            .as_ref()
+            .is_some_and(|label| !names.contains(label))
+        {
+            self.label = None;
+        }
+    }
 }
 
 impl Notch {
@@ -232,30 +234,12 @@ impl Notch {
                     .items_center()
                     .justify_center()
                     .child(progress_ring(timer.progress(now), px(5.0), px(10.0)))
-                    .child(tomato(16.0))
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .line_height(px(14.0))
-                            .text_color(rgb(MUTED))
-                            .child(timer.phase.title()),
-                    )
+                    .child(tomato(16.0).top(px(-4.0)))
                     .child(
                         div()
                             .text_size(px(26.0))
                             .line_height(px(28.0))
                             .child(countdown(remaining)),
-                    )
-                    .child(
-                        div()
-                            .mt(px(4.0))
-                            .px(px(6.0))
-                            .rounded_full()
-                            .bg(rgb(0x352641))
-                            .text_color(rgb(0xebc9fa))
-                            .text_size(px(9.0))
-                            .line_height(px(15.0))
-                            .child(format!("{}/{}", timer.round(), ROUNDS)),
                     ),
             )
             .child(

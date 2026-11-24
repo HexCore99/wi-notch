@@ -1,10 +1,31 @@
 use gpui::{prelude::*, *};
 
 use super::{
-    MUTED_TEXT,
+    CONTROL_BACKGROUND, CONTROL_HOVER, MUTED_TEXT,
     text_input::{TextChanged, TextInput},
 };
 use crate::appearance::AppearanceSettings;
+
+#[derive(Clone)]
+struct SessionDrag {
+    index: usize,
+    name: SharedString,
+}
+
+impl Render for SessionDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .max_w(px(240.0))
+            .px(px(10.0))
+            .py(px(5.0))
+            .rounded_md()
+            .bg(rgb(CONTROL_BACKGROUND))
+            .text_color(rgb(0xffffff))
+            .text_size(px(13.0))
+            .truncate()
+            .child(self.name.clone())
+    }
+}
 
 pub(super) struct PomodoroPage {
     settings: Entity<AppearanceSettings>,
@@ -40,21 +61,106 @@ impl PomodoroPage {
             .any(|label| label.to_lowercase() == lower_name)
         {
             self.error = Some("That session name is already in the list.");
-        } else {
-            settings.pomodoro_session_names.push(name.to_owned());
-            if let Err(error) = settings.save() {
-                eprintln!("Failed to save Pomodoro session name: {error}");
-                self.error = Some("Couldn’t save the session name. Try adding it again.");
-            } else {
-                self.settings.update(cx, |current, cx| {
-                    *current = settings;
-                    cx.notify();
-                });
-                self.input.update(cx, TextInput::clear);
-            }
+            cx.notify();
+            return;
         }
-        cx.notify();
+
+        settings.pomodoro_session_names.push(name.to_owned());
+        if self.save_sessions(settings, cx) {
+            self.input.update(cx, TextInput::clear);
+        }
     }
+
+    fn remove(&mut self, index: usize, cx: &mut Context<Self>) {
+        let mut settings = self.settings.read(cx).clone();
+        let names = &mut settings.pomodoro_session_names;
+        if index < names.len() {
+            names.remove(index);
+            self.save_sessions(settings, cx);
+        }
+    }
+
+    fn reorder(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
+        let mut settings = self.settings.read(cx).clone();
+        let names = &mut settings.pomodoro_session_names;
+        if from == to || from >= names.len() || to >= names.len() {
+            return;
+        }
+        let name = names.remove(from);
+        names.insert(to, name);
+        self.save_sessions(settings, cx);
+    }
+
+    fn save_sessions(&mut self, settings: AppearanceSettings, cx: &mut Context<Self>) -> bool {
+        if let Err(error) = settings.save() {
+            eprintln!("Failed to save Pomodoro sessions: {error}");
+            self.error = Some("Couldn’t save the session list. Try again.");
+            cx.notify();
+            return false;
+        }
+
+        self.error = None;
+        self.settings.update(cx, |current, cx| {
+            *current = settings;
+            cx.notify();
+        });
+        cx.notify();
+        true
+    }
+
+    fn session_row(index: usize, name: &str, cx: &Context<Self>) -> Stateful<Div> {
+        let name = SharedString::from(name.to_owned());
+        div()
+            .id(("session", index))
+            .h(px(38.0))
+            .flex()
+            .items_center()
+            .gap(px(4.0))
+            .pl(px(12.0))
+            .pr(px(8.0))
+            .when(index > 0, |row| {
+                row.border_t_1().border_color(rgb(0x303032))
+            })
+            .drag_over::<SessionDrag>(move |style, session, _, _| {
+                if session.index == index {
+                    style
+                } else {
+                    style.bg(rgb(CONTROL_BACKGROUND))
+                }
+            })
+            .on_drop(cx.listener(move |page, session: &SessionDrag, _, cx| {
+                page.reorder(session.index, index, cx);
+            }))
+            .child(div().flex_1().min_w(px(0.0)).truncate().child(name.clone()))
+            .child(
+                session_control("drag-session")
+                    .cursor(CursorStyle::OpenHand)
+                    .on_drag(SessionDrag { index, name }, |session, _, _, cx| {
+                        cx.new(|_| session.clone())
+                    })
+                    .child("≡"),
+            )
+            .child(
+                session_control("remove-session")
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |page, _, _, cx| page.remove(index, cx)))
+                    .child("−"),
+            )
+    }
+}
+
+fn session_control(id: &'static str) -> Stateful<Div> {
+    div()
+        .id(id)
+        .size(px(24.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_sm()
+        .text_size(px(16.0))
+        .text_color(rgb(MUTED_TEXT))
+        .hover(|button| button.bg(rgb(CONTROL_HOVER)).text_color(rgb(0xffffff)))
 }
 
 impl Render for PomodoroPage {
@@ -131,16 +237,12 @@ impl Render for PomodoroPage {
                                 .child("No saved sessions"),
                         )
                     })
-                    .children(names.iter().enumerate().map(|(index, name)| {
-                        div()
-                            .px(px(12.0))
-                            .py(px(8.0))
-                            .when(index > 0, |row| {
-                                row.border_t_1().border_color(rgb(0x303032))
-                            })
-                            .truncate()
-                            .child(name.clone())
-                    })),
+                    .children(
+                        names
+                            .iter()
+                            .enumerate()
+                            .map(|(index, name)| Self::session_row(index, name, cx)),
+                    ),
             )
     }
 }
