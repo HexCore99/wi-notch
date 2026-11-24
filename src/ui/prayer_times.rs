@@ -21,7 +21,7 @@ pub(super) fn reminder_banner(reminder: PrayerReminder) -> Div {
         .child(reminder.message())
 }
 
-pub(super) fn header(schedule: &Schedule, now: DateTime<Utc>) -> Div {
+pub(super) fn header(schedule: &Schedule, now: DateTime<Utc>, date: impl IntoElement) -> Div {
     let local = now.with_timezone(&schedule.city.zone);
     div()
         .max_w(px(264.0))
@@ -30,13 +30,7 @@ pub(super) fn header(schedule: &Schedule, now: DateTime<Utc>) -> Div {
         .gap(px(13.0))
         .whitespace_nowrap()
         .text_size(px(12.0))
-        .child(
-            div()
-                .flex_none()
-                .relative()
-                .left(px(-5.0))
-                .child(local.format("%a %d %b %Y").to_string()),
-        )
+        .child(div().flex_none().relative().left(px(-5.0)).child(date))
         .child(
             div()
                 .min_w(px(0.0))

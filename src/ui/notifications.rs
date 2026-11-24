@@ -176,10 +176,14 @@ impl Notifications {
     }
 
     pub fn open(&mut self) {
-        self.unread.clear();
+        self.mark_read();
         self.action_error = None;
         self.scroll = ScrollAnimation::default();
         self.visible_since.clear();
+    }
+
+    pub fn mark_read(&mut self) {
+        self.unread.clear();
     }
 
     pub fn find(&self, key: ToastKey) -> Option<&Toast> {

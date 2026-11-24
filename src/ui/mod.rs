@@ -1,4 +1,5 @@
 pub mod animation;
+mod calendar;
 pub mod clock;
 mod music_player;
 pub mod notch;

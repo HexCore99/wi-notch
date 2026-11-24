@@ -51,14 +51,16 @@ pub struct SizeAnimation {
     from: (f32, f32),
     to: (f32, f32),
     start_time: Instant,
+    duration: Duration,
 }
 
 impl SizeAnimation {
-    pub fn new(from: (f32, f32), to: (f32, f32)) -> Self {
+    pub fn new(from: (f32, f32), to: (f32, f32), expanding: bool) -> Self {
         Self {
             from,
             to,
             start_time: Instant::now(),
+            duration: Duration::from_millis(if expanding { 720 } else { 520 }),
         }
     }
 
@@ -67,7 +69,8 @@ impl SizeAnimation {
     }
 
     pub fn sample(&self) -> (f32, f32, bool) {
-        let progress = (self.start_time.elapsed().as_secs_f32() / 0.520).min(1.0);
+        let progress =
+            (self.start_time.elapsed().as_secs_f32() / self.duration.as_secs_f32()).min(1.0);
 
         // let eased = 1.0 - (1.0 - progress).powi(3); // ease out cubic
         /*
