@@ -15,16 +15,16 @@ use super::settings::{Page as SettingsPage, SettingsView};
 use super::volume::{VOLUME_HUD_SIZE, VolumeFeedback, volume_bar};
 use crate::appearance::{AppearanceSettings, Corners};
 use crate::notch_geometry::{COLLAPSED_SIZE, EXPANDED_SIZE};
-use crate::prayer::{Schedule, city};
+use crate::prayer::{PrayerReminder, PrayerReminders, Schedule, city};
 use crate::ui::clock::Clock;
 use crate::windows::app_icons::{read_registered_icon, read_shell_icon};
-use crate::windows::audio::{VolumeKeyWatch, read_default_output};
+use crate::windows::audio::{VolumeKeyWatch, play_system_sound, read_default_output};
 use crate::windows::display::{Monitor, monitors, selected_monitor};
 use crate::windows::media::SessionManager;
 use crate::windows::notifications::{
     Access, Listener, Snapshot, Toast, ToastKey, open_notification, read_artwork, read_icon,
 };
-use chrono::{Local, Utc};
+use chrono::{DateTime, Local, Utc};
 use gpui::{prelude::*, *};
 use pomodoro::Pomodoro;
 
@@ -94,6 +94,8 @@ pub struct Notch {
     music_player: Entity<MusicPlayer>,
     prayer_schedule: Option<Schedule>,
     prayer_refresh: Option<Task<()>>,
+    prayer_reminders: PrayerReminders,
+    prayer_banner: Option<(PrayerReminder, Instant)>,
     pomodoro: Pomodoro,
     volume_feedback: VolumeFeedback,
     volume_keys: Option<VolumeKeyWatch>,
@@ -113,6 +115,7 @@ impl Notch {
         cx.observe_in(&appearance, window, |this, appearance, window, cx| {
             this.pomodoro
                 .clear_removed_session(&appearance.read(cx).pomodoro_session_names);
+            this.sync_prayer_settings(cx);
             this.sync_idle_policy(cx);
             this.sync_placement(window, cx);
             cx.notify();
@@ -206,7 +209,13 @@ impl Notch {
                 }
             })
         });
-        let always_minimal = appearance.read(cx).always_minimal;
+        let settings = appearance.read(cx);
+        let always_minimal = settings.always_minimal;
+        let prayer_reminders = PrayerReminders::new(
+            settings.prayer_city_id,
+            settings.prayer_reminders,
+            Utc::now(),
+        );
         let compact_size = (width, height);
         let (mode, (width, height)) = if always_minimal {
             (Mode::Collapsed, COLLAPSED_SIZE)
@@ -241,6 +250,8 @@ impl Notch {
             music_player: cx.new(|_| MusicPlayer::default()),
             prayer_schedule: None,
             prayer_refresh: None,
+            prayer_reminders,
+            prayer_banner: None,
             pomodoro: Pomodoro::default(),
             volume_feedback: VolumeFeedback::default(),
             volume_keys: VolumeKeyWatch::start()
@@ -251,6 +262,7 @@ impl Notch {
             settings_window: None,
         };
         notch.update_idle_start(cx);
+        notch.sync_prayer_refresh(cx);
         notch.sync_placement(window, cx);
         notch
     }
@@ -279,20 +291,8 @@ impl Notch {
             self.music_player
                 .update(cx, |player, cx| player.set_visible(music_visible, cx));
         }
-        let prayer_visible = mode == Mode::Expanded(Page::PrayerTimes);
-        if (self.mode == Mode::Expanded(Page::PrayerTimes)) != prayer_visible {
-            self.prayer_refresh = prayer_visible.then(|| {
-                cx.spawn(async move |this, cx| {
-                    loop {
-                        cx.background_executor().timer(Duration::from_secs(1)).await;
-                        if this.update(cx, |_, cx| cx.notify()).is_err() {
-                            break;
-                        }
-                    }
-                })
-            });
-        }
         self.mode = mode;
+        self.sync_prayer_refresh(cx);
         if mode != Mode::Expanded(Page::Pomodoro) {
             self.close_pomodoro_menu(cx);
         }
@@ -304,6 +304,77 @@ impl Notch {
         }
         self.update_idle_start(cx);
         cx.notify();
+    }
+
+    fn sync_prayer_settings(&mut self, cx: &mut Context<Self>) {
+        let settings = self.appearance.read(cx);
+        if self.prayer_reminders.configure(
+            settings.prayer_city_id,
+            settings.prayer_reminders,
+            Utc::now(),
+        ) {
+            self.prayer_banner = None;
+            self.sync_prayer_refresh(cx);
+        }
+    }
+
+    fn sync_prayer_refresh(&mut self, cx: &mut Context<Self>) {
+        let needed = self.mode == Mode::Expanded(Page::PrayerTimes)
+            || self.appearance.read(cx).prayer_reminders.enabled();
+        if needed == self.prayer_refresh.is_some() {
+            return;
+        }
+        self.prayer_refresh = needed.then(|| {
+            cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(Duration::from_secs(1)).await;
+                    if this
+                        .update(cx, |notch, cx| notch.refresh_prayers(Utc::now(), cx))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+        });
+    }
+
+    fn update_prayer_schedule(&mut self, city_id: u32, now: DateTime<Utc>) {
+        let selected = city(city_id);
+        if !self
+            .prayer_schedule
+            .as_ref()
+            .is_some_and(|schedule| schedule.is_current(selected.id, now))
+        {
+            self.prayer_schedule = Some(Schedule::new(selected, now));
+        }
+    }
+
+    fn refresh_prayers(&mut self, now: DateTime<Utc>, cx: &mut Context<Self>) {
+        let instant = Instant::now();
+        let expired = self
+            .prayer_banner
+            .is_some_and(|(_, until)| instant >= until);
+        if expired {
+            self.prayer_banner = None;
+        }
+
+        let settings = self.appearance.read(cx);
+        if settings.prayer_reminders.enabled() {
+            self.update_prayer_schedule(settings.prayer_city_id, now);
+            if let Some(schedule) = &self.prayer_schedule
+                && let Some(reminder) = self.prayer_reminders.check(schedule, now)
+            {
+                play_system_sound();
+                self.prayer_banner = Some((reminder, instant + Duration::from_secs(4)));
+                cx.notify();
+                return;
+            }
+        }
+
+        if expired || self.mode == Mode::Expanded(Page::PrayerTimes) {
+            cx.notify();
+        }
     }
 
     fn update_idle_start(&mut self, cx: &App) {
@@ -488,6 +559,7 @@ impl Notch {
 
             if let Some(key) = newest
                 && !self.always_minimal
+                && self.prayer_banner.is_none()
                 && matches!(
                     self.mode,
                     Mode::Compact | Mode::Collapsed | Mode::Preview(_)
@@ -739,14 +811,7 @@ impl Render for Notch {
         let prayer_visible = visible_page == Some(Page::PrayerTimes);
         let prayer = if prayer_visible || self.mode == Mode::Expanded(Page::PrayerTimes) {
             let now = Utc::now();
-            let city = city(settings.prayer_city_id);
-            if !self
-                .prayer_schedule
-                .as_ref()
-                .is_some_and(|schedule| schedule.is_current(city.id, now))
-            {
-                self.prayer_schedule = Some(Schedule::new(city, now));
-            }
+            self.update_prayer_schedule(settings.prayer_city_id, now);
             self.prayer_schedule
                 .as_ref()
                 .filter(|_| prayer_visible)
@@ -758,8 +823,18 @@ impl Render for Notch {
             f32::from(display.bounds().size.height)
         });
         let volume = self.volume_feedback.frame(Instant::now());
-        let volume_hud = volume.filter(|_| matches!(self.mode, Mode::Compact | Mode::Collapsed));
-        let target = if volume_hud.is_some() {
+        let standalone_reminder = self.prayer_banner.filter(|_| {
+            matches!(
+                self.mode,
+                Mode::Compact | Mode::Collapsed | Mode::Preview(_)
+            )
+        });
+        let volume_hud = volume.filter(|_| {
+            standalone_reminder.is_none() && matches!(self.mode, Mode::Compact | Mode::Collapsed)
+        });
+        let target = if standalone_reminder.is_some() {
+            (EXPANDED_SIZE.0, PREVIEW_HEIGHT)
+        } else if volume_hud.is_some() {
             VOLUME_HUD_SIZE
         } else {
             match self.mode {
@@ -840,6 +915,12 @@ impl Render for Notch {
             .text_color(rgb(0xffffff))
             .font_weight(FontWeight(600.0));
 
+        if let Some((reminder, _)) = standalone_reminder {
+            return notch
+                .justify_center()
+                .child(prayer_times::reminder_banner(reminder).opacity(player_opacity));
+        }
+
         if let Some(volume) = volume_hud {
             let opacity = ((self.height - COLLAPSED_SIZE.1) / 22.0).clamp(0.0, 1.0);
             return notch.justify_center().child(
@@ -871,7 +952,9 @@ impl Render for Notch {
             .flex_none()
             .flex()
             .items_center();
-        let header = if let Some(volume) = volume {
+        let header = if let Some((reminder, _)) = self.prayer_banner {
+            header.child(prayer_times::reminder_banner(reminder))
+        } else if let Some(volume) = volume {
             let available_width = (self.width - 88.0).clamp(0.0, 226.0);
             header.child(
                 volume_bar(volume)

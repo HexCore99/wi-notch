@@ -7,7 +7,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::prayer::DHAKA_ID;
+use crate::prayer::{DHAKA_ID, ReminderSettings};
 
 pub const MIN_IDLE_COLLAPSE_DELAY_SECS: u32 = 5;
 pub const MAX_IDLE_COLLAPSE_DELAY_SECS: u32 = 300;
@@ -49,6 +49,7 @@ pub struct AppearanceSettings {
     pub always_minimal: bool,
     pub idle_collapse_delay_secs: u32,
     pub prayer_city_id: u32,
+    pub prayer_reminders: ReminderSettings,
     pub pomodoro_session_names: Vec<String>,
 }
 
@@ -64,6 +65,7 @@ impl Default for AppearanceSettings {
             always_minimal: false,
             idle_collapse_delay_secs: 20,
             prayer_city_id: DHAKA_ID,
+            prayer_reminders: ReminderSettings::default(),
             pomodoro_session_names: Vec::new(),
         }
     }
@@ -145,6 +147,7 @@ mod tests {
             always_minimal: false,
             idle_collapse_delay_secs: 20,
             prayer_city_id: DHAKA_ID,
+            prayer_reminders: ReminderSettings::default(),
             pomodoro_session_names: Vec::new(),
         };
 
@@ -172,6 +175,7 @@ mod tests {
         assert!(!settings.always_minimal);
         assert_eq!(settings.idle_collapse_seconds(), 20);
         assert_eq!(settings.prayer_city_id, DHAKA_ID);
+        assert_eq!(settings.prayer_reminders, ReminderSettings::default());
         assert!(settings.pomodoro_session_names.is_empty());
         Ok(())
     }
@@ -219,6 +223,10 @@ mod tests {
             always_minimal: true,
             idle_collapse_delay_secs: 45,
             prayer_city_id: 5_128_581,
+            prayer_reminders: ReminderSettings {
+                before: true,
+                at_start: false,
+            },
             pomodoro_session_names: vec!["Study (DSA)".to_owned(), "Work".to_owned()],
         };
 
