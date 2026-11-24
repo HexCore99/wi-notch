@@ -5,7 +5,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::animation::{PageDirection, SizeAnimation, page_transition_frame};
+use super::animation::{PageDirection, SizeAnimation, SizeTransition, page_transition_frame};
+use super::calendar::{self, Calendar};
 use super::music_player::MusicPlayer;
 use super::notifications::{
     Notifications, PREVIEW_HEIGHT, render_artwork, render_icon, render_icon_pixels,
@@ -24,7 +25,7 @@ use crate::windows::media::SessionManager;
 use crate::windows::notifications::{
     Access, Listener, Snapshot, Toast, ToastKey, open_notification, read_artwork, read_icon,
 };
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Local, NaiveDate, Utc};
 use gpui::{prelude::*, *};
 use pomodoro::Pomodoro;
 
@@ -91,6 +92,7 @@ pub struct Notch {
     opening_notification: bool,
 
     clock: Entity<Clock>,
+    calendar: Option<Calendar>,
     music_player: Entity<MusicPlayer>,
     prayer_schedule: Option<Schedule>,
     prayer_refresh: Option<Task<()>>,
@@ -222,6 +224,13 @@ impl Notch {
         } else {
             (Mode::Compact, compact_size)
         };
+        let clock = cx.new(Clock::new);
+        cx.observe(&clock, |this, _, cx| {
+            if this.calendar.is_some() {
+                cx.notify();
+            }
+        })
+        .detach();
         let mut notch = Self {
             width,
             height,
@@ -246,7 +255,8 @@ impl Notch {
             preview_timeout: None,
             opening_notification: false,
 
-            clock: cx.new(Clock::new),
+            clock,
+            calendar: None,
             music_player: cx.new(|_| MusicPlayer::default()),
             prayer_schedule: None,
             prayer_refresh: None,
@@ -292,6 +302,7 @@ impl Notch {
                 .update(cx, |player, cx| player.set_visible(music_visible, cx));
         }
         self.mode = mode;
+        self.calendar = None;
         self.sync_prayer_refresh(cx);
         if mode != Mode::Expanded(Page::Pomodoro) {
             self.close_pomodoro_menu(cx);
@@ -427,6 +438,44 @@ impl Notch {
         }
     }
 
+    fn toggle_calendar(&mut self, cx: &mut Context<Self>) {
+        if self.calendar.take().is_some() {
+            if self.mode == Mode::Notifications {
+                self.notifications.mark_read();
+            }
+        } else {
+            self.calendar = Some(Calendar::default());
+        }
+        cx.notify();
+    }
+
+    pub(super) fn show_calendar_month(
+        &mut self,
+        month: NaiveDate,
+        today: NaiveDate,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(calendar) = &mut self.calendar {
+            calendar.show_month(month, today);
+            cx.notify();
+        }
+    }
+
+    fn date_label(&self, today: NaiveDate, cx: &Context<Self>) -> Stateful<Div> {
+        div()
+            .id("notch-date")
+            .child(today.format("%a %d %b %Y").to_string())
+            .when(
+                self.page_switch.is_none()
+                    && matches!(self.mode, Mode::Expanded(_) | Mode::Notifications),
+                |date| {
+                    date.cursor_pointer()
+                        .hover(|style| style.text_color(rgb(0xba9cff)))
+                        .on_click(cx.listener(|notch, _, _, cx| notch.toggle_calendar(cx)))
+                },
+            )
+    }
+
     fn switch_page(&mut self, direction: PageDirection, cx: &mut Context<Self>) {
         if self.page_switch.is_some() || !matches!(self.mode, Mode::Expanded(_)) {
             return;
@@ -552,9 +601,10 @@ impl Notch {
             .set_access(access, |image| cx.drop_image(image, None));
         if let Some(snapshot) = snapshot {
             self.sync_notification_artwork(&snapshot.toasts, cx);
-            let (changed, newest) = self
-                .notifications
-                .sync(snapshot.toasts, self.mode == Mode::Notifications);
+            let (changed, newest) = self.notifications.sync(
+                snapshot.toasts,
+                self.mode == Mode::Notifications && self.calendar.is_none(),
+            );
             self.sync_notification_icons(snapshot.apps, cx);
 
             if let Some(key) = newest
@@ -722,6 +772,9 @@ impl Notch {
     }
 
     fn open_settings_page(&mut self, page: Option<SettingsPage>, cx: &mut Context<Self>) {
+        if self.calendar.is_some() {
+            self.toggle_calendar(cx);
+        }
         if self.page_switch.take().is_some() {
             cx.notify();
         }
@@ -819,6 +872,11 @@ impl Render for Notch {
         } else {
             None
         };
+        let today = prayer.map_or_else(
+            || Local::now().date_naive(),
+            |(schedule, now)| now.with_timezone(&schedule.city.zone).date_naive(),
+        );
+        let calendar_open = self.calendar.is_some();
         let screen_height = window.display(cx).map_or(f32::INFINITY, |display| {
             f32::from(display.bounds().size.height)
         });
@@ -832,7 +890,12 @@ impl Render for Notch {
         let volume_hud = volume.filter(|_| {
             standalone_reminder.is_none() && matches!(self.mode, Mode::Compact | Mode::Collapsed)
         });
-        let target = if standalone_reminder.is_some() {
+        let target = if calendar_open {
+            (
+                EXPANDED_SIZE.0,
+                self.compact_size.1 + calendar::PANEL_HEIGHT,
+            )
+        } else if standalone_reminder.is_some() {
             (EXPANDED_SIZE.0, PREVIEW_HEIGHT)
         } else if volume_hud.is_some() {
             VOLUME_HUD_SIZE
@@ -850,8 +913,22 @@ impl Render for Notch {
         };
         let target = (target.0, target.1.min(screen_height));
         if target != self.target_size {
+            let previous_height = self.target_size.1;
+            let transition = if volume_hud.is_some() {
+                SizeTransition::Resize
+            } else if target.1 > previous_height {
+                SizeTransition::Expand
+            } else if target.1 < previous_height && previous_height > VOLUME_HUD_SIZE.1 {
+                SizeTransition::Shrink
+            } else {
+                SizeTransition::Resize
+            };
             self.target_size = target;
-            self.animation = Some(SizeAnimation::new((self.width, self.height), target));
+            self.animation = Some(SizeAnimation::new(
+                (self.width, self.height),
+                target,
+                transition,
+            ));
         }
         let resizing = self.animation.is_some();
         if let Some(animation) = &self.animation {
@@ -900,6 +977,7 @@ impl Render for Notch {
         let date_opacity = self.date_reveal;
         let player_opacity = ((expansion - 0.6) / 0.35).clamp(0.0, 1.0);
         let content_opacity = player_opacity * page_opacity;
+        let page_body_visible = !calendar_open && content_opacity > 0.0;
 
         let notch = div()
             .id("notch")
@@ -967,7 +1045,10 @@ impl Render for Notch {
                 header.relative().left(page_offset).opacity(page_opacity)
             });
             if let Some((schedule, now)) = prayer {
-                header.child(prayer_times::header(schedule, now).opacity(player_opacity))
+                header.child(
+                    prayer_times::header(schedule, now, self.date_label(today, cx))
+                        .opacity(player_opacity),
+                )
             } else if self.mode == Mode::Compact && self.pomodoro.in_cycle() {
                 header
                     .relative()
@@ -989,13 +1070,12 @@ impl Render for Notch {
                     .gap(px(8.0 * date_opacity))
                     .when(date_opacity > 0.0, |header| {
                         header.child(
-                            div()
+                            self.date_label(today, cx)
                                 .w(px(104.0 * date_opacity))
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .opacity(date_opacity)
-                                .text_size(px(12.0))
-                                .child(Local::now().format("%a %d %b %Y").to_string()),
+                                .text_size(px(12.0)),
                         )
                     })
                     .child(self.clock.clone())
@@ -1004,8 +1084,11 @@ impl Render for Notch {
 
         notch
             .child(header)
+            .when_some(self.calendar, |notch, calendar| {
+                notch.child(calendar.panel(today, cx).opacity(player_opacity))
+            })
             .when(
-                visible_page == Some(Page::Music) && content_opacity > 0.0,
+                visible_page == Some(Page::Music) && page_body_visible,
                 |notch| {
                     notch.child(
                         div()
@@ -1017,7 +1100,7 @@ impl Render for Notch {
                 },
             )
             .when_some(
-                prayer.filter(|_| content_opacity > 0.0),
+                prayer.filter(|_| page_body_visible),
                 |notch, (schedule, now)| {
                     notch.child(
                         prayer_times::panel(schedule, now, background)
@@ -1028,7 +1111,7 @@ impl Render for Notch {
                 },
             )
             .when(
-                visible_page == Some(Page::Pomodoro) && content_opacity > 0.0,
+                visible_page == Some(Page::Pomodoro) && page_body_visible,
                 |notch| {
                     notch.child(
                         self.pomodoro_panel(now, cx)
@@ -1050,38 +1133,41 @@ impl Render for Notch {
                 )
             })
             .when(
-                matches!(self.mode, Mode::Expanded(_)) && player_opacity > 0.0,
+                !calendar_open && matches!(self.mode, Mode::Expanded(_)) && player_opacity > 0.0,
                 |notch| {
                     notch
                         .child(self.page_arrow(PageDirection::Left, player_opacity, cx))
                         .child(self.page_arrow(PageDirection::Right, player_opacity, cx))
                 },
             )
-            .when(self.mode == Mode::Notifications, |notch| {
-                let view = cx.weak_entity();
-                let dismiss_view = view.clone();
-                let height = self.height.min(target.1) - self.compact_size.1;
-                notch.child(self.notifications.panel(
-                    height,
-                    window,
-                    cx.listener(move |this, event: &ScrollWheelEvent, window, cx| {
-                        if this
-                            .notifications
-                            .scroll(height, event.delta, window.line_height())
-                        {
-                            cx.notify();
-                        }
-                    }),
-                    cx.listener(|this, _, _, cx| this.request_notification_access(cx)),
-                    move |key, cx| {
-                        let _ = view.update(cx, |this, cx| this.open_notification_app(key, cx));
-                    },
-                    move |key, cx| {
-                        let _ = dismiss_view
-                            .update(cx, |notch, cx| notch.dismiss_notification(key, cx));
-                    },
-                ))
-            })
+            .when(
+                !calendar_open && self.mode == Mode::Notifications,
+                |notch| {
+                    let view = cx.weak_entity();
+                    let dismiss_view = view.clone();
+                    let height = self.height.min(target.1) - self.compact_size.1;
+                    notch.child(self.notifications.panel(
+                        height,
+                        window,
+                        cx.listener(move |this, event: &ScrollWheelEvent, window, cx| {
+                            if this
+                                .notifications
+                                .scroll(height, event.delta, window.line_height())
+                            {
+                                cx.notify();
+                            }
+                        }),
+                        cx.listener(|this, _, _, cx| this.request_notification_access(cx)),
+                        move |key, cx| {
+                            let _ = view.update(cx, |this, cx| this.open_notification_app(key, cx));
+                        },
+                        move |key, cx| {
+                            let _ = dismiss_view
+                                .update(cx, |notch, cx| notch.dismiss_notification(key, cx));
+                        },
+                    ))
+                },
+            )
             .when(
                 matches!(self.mode, Mode::Expanded(_) | Mode::Notifications)
                     && player_opacity > 0.0,
