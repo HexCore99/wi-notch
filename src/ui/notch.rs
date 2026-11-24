@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::animation::{PageDirection, SizeAnimation, page_transition_frame};
+use super::animation::{PageDirection, SizeAnimation, SizeTransition, page_transition_frame};
 use super::calendar::{self, Calendar};
 use super::music_player::MusicPlayer;
 use super::notifications::{
@@ -913,12 +913,21 @@ impl Render for Notch {
         };
         let target = (target.0, target.1.min(screen_height));
         if target != self.target_size {
-            let expanding = volume_hud.is_none() && target.1 > self.target_size.1;
+            let previous_height = self.target_size.1;
+            let transition = if volume_hud.is_some() {
+                SizeTransition::Resize
+            } else if target.1 > previous_height {
+                SizeTransition::Expand
+            } else if target.1 < previous_height && previous_height > VOLUME_HUD_SIZE.1 {
+                SizeTransition::Shrink
+            } else {
+                SizeTransition::Resize
+            };
             self.target_size = target;
             self.animation = Some(SizeAnimation::new(
                 (self.width, self.height),
                 target,
-                expanding,
+                transition,
             ));
         }
         let resizing = self.animation.is_some();

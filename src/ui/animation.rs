@@ -2,6 +2,9 @@ use std::time::{Duration, Instant};
 
 const PAGE_SWITCH_DURATION: Duration = Duration::from_millis(480);
 const PAGE_SLIDE_DISTANCE: f32 = 6.0;
+const PANEL_TRANSITION_DURATION: Duration = Duration::from_millis(675);
+const RESIZE_DURATION: Duration = Duration::from_millis(520);
+const CLOSE_REBOUND: f32 = 0.72;
 
 #[derive(Clone, Copy)]
 pub(super) enum PageDirection {
@@ -47,55 +50,113 @@ pub(super) fn page_transition_frame(
     })
 }
 
+pub(super) enum SizeTransition {
+    Expand,
+    Shrink,
+    Resize,
+}
+
 pub struct SizeAnimation {
     from: (f32, f32),
     to: (f32, f32),
     start_time: Instant,
     duration: Duration,
+    rebound: Option<(f32, f32)>,
 }
 
 impl SizeAnimation {
-    pub fn new(from: (f32, f32), to: (f32, f32), expanding: bool) -> Self {
+    pub(super) fn new(from: (f32, f32), to: (f32, f32), transition: SizeTransition) -> Self {
+        let (duration, rebound) = match transition {
+            SizeTransition::Expand => (PANEL_TRANSITION_DURATION, None),
+            SizeTransition::Resize => (RESIZE_DURATION, None),
+            SizeTransition::Shrink => {
+                // Keep the smallest notch large enough to remain visible during the bounce.
+                let width = to.0 - ((from.0 - to.0) * 0.12).clamp(0.0, 20.0_f32.min(to.0 * 0.25));
+                let height = to.1 - ((from.1 - to.1) * 0.12).clamp(0.0, 8.0_f32.min(to.1 * 0.25));
+                (PANEL_TRANSITION_DURATION, Some((width, height)))
+            }
+        };
         Self {
             from,
             to,
             start_time: Instant::now(),
-            duration: Duration::from_millis(if expanding { 720 } else { 520 }),
+            duration,
+            rebound,
         }
     }
 
     pub fn min_size(&self) -> (f32, f32) {
-        (self.from.0.min(self.to.0), self.from.1.min(self.to.1))
+        let smallest = self.rebound.unwrap_or(self.to);
+        (self.from.0.min(smallest.0), self.from.1.min(smallest.1))
     }
 
     pub fn sample(&self) -> (f32, f32, bool) {
-        let progress =
-            (self.start_time.elapsed().as_secs_f32() / self.duration.as_secs_f32()).min(1.0);
-
-        // let eased = 1.0 - (1.0 - progress).powi(3); // ease out cubic
-        /*
-         * smoothing function: 3p^2 - 2p^3 -> where p is progress
-         * This is a smoothstep function that eases in and out.
-         *
-         */
-        // let eased = progress * progress * (3.0 - 2.0 * progress);
-        let smooth = progress * progress * (3.0 - 2.0 * progress);
-
-        let strength = 1.2;
-        let shifted = smooth - 1.0;
-
-        // Back easing: pass the target slightly, then settle back.
-        let eased = 1.0 + (strength + 1.0) * shifted.powi(3) + strength * shifted.powi(2);
-
-        let width = self.from.0 + (self.to.0 - self.from.0) * eased;
-        let height = self.from.1 + (self.to.1 - self.from.1) * eased;
-        (width, height, progress >= 1.0)
+        self.sample_at(self.start_time.elapsed())
     }
+
+    fn sample_at(&self, elapsed: Duration) -> (f32, f32, bool) {
+        if elapsed >= self.duration {
+            return (self.to.0, self.to.1, true);
+        }
+        let progress = elapsed.as_secs_f32() / self.duration.as_secs_f32();
+
+        let (from, to, eased) = if let Some(rebound) = self.rebound {
+            if progress < CLOSE_REBOUND {
+                (self.from, rebound, smoothstep(progress / CLOSE_REBOUND))
+            } else {
+                let settle = (progress - CLOSE_REBOUND) / (1.0 - CLOSE_REBOUND);
+                (rebound, self.to, smoothstep(settle))
+            }
+        } else {
+            let shifted = smoothstep(progress) - 1.0;
+            let eased = 1.0 + 2.2 * shifted.powi(3) + 1.2 * shifted.powi(2);
+            (self.from, self.to, eased)
+        };
+
+        let width = from.0 + (to.0 - from.0) * eased;
+        let height = from.1 + (to.1 - from.1) * eased;
+        (width, height, false)
+    }
+}
+
+fn smoothstep(progress: f32) -> f32 {
+    progress * progress * (3.0 - 2.0 * progress)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shrinking_bounces_below_the_target_then_settles() {
+        let expanded = (340.0, 162.0);
+        for (target, smallest) in [((150.0, 35.0), (130.0, 27.0)), ((64.0, 8.0), (48.0, 6.0))] {
+            let closing = SizeAnimation::new(expanded, target, SizeTransition::Shrink);
+            assert_eq!(closing.sample_at(Duration::ZERO), (340.0, 162.0, false));
+            assert_eq!(closing.min_size(), smallest);
+
+            let (width, height, finished) =
+                closing.sample_at(PANEL_TRANSITION_DURATION.mul_f32(CLOSE_REBOUND));
+            assert!((width - smallest.0).abs() < 0.01);
+            assert!((height - smallest.1).abs() < 0.01);
+            assert!(!finished);
+
+            let settling = PANEL_TRANSITION_DURATION.mul_f32((CLOSE_REBOUND + 1.0) / 2.0);
+            let (width, height, _) = closing.sample_at(settling);
+            assert!(width > smallest.0 && width < target.0);
+            assert!(height > smallest.1 && height < target.1);
+            assert_eq!(
+                closing.sample_at(PANEL_TRANSITION_DURATION),
+                (target.0, target.1, true)
+            );
+        }
+
+        let opening = SizeAnimation::new((150.0, 35.0), expanded, SizeTransition::Expand);
+        assert_eq!(
+            opening.sample_at(PANEL_TRANSITION_DURATION),
+            (340.0, 162.0, true)
+        );
+    }
 
     #[test]
     fn page_switch_fades_and_slides_in_the_chevron_direction() {
