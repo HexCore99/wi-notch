@@ -47,6 +47,7 @@ pub struct AppearanceSettings {
     pub monitor: Option<String>,
     pub auto_minimal: bool,
     pub always_minimal: bool,
+    pub sync_visualizer: bool,
     pub idle_collapse_delay_secs: u32,
     pub prayer_city_id: u32,
     pub prayer_reminders: ReminderSettings,
@@ -63,6 +64,7 @@ impl Default for AppearanceSettings {
             monitor: None,
             auto_minimal: false,
             always_minimal: false,
+            sync_visualizer: false,
             idle_collapse_delay_secs: 20,
             prayer_city_id: DHAKA_ID,
             prayer_reminders: ReminderSettings::default(),
@@ -145,6 +147,7 @@ mod tests {
             monitor: None,
             auto_minimal: false,
             always_minimal: false,
+            sync_visualizer: false,
             idle_collapse_delay_secs: 20,
             prayer_city_id: DHAKA_ID,
             prayer_reminders: ReminderSettings::default(),
@@ -173,6 +176,7 @@ mod tests {
         assert_eq!(settings.monitor, None);
         assert!(!settings.auto_minimal);
         assert!(!settings.always_minimal);
+        assert!(!settings.sync_visualizer);
         assert_eq!(settings.idle_collapse_seconds(), 20);
         assert_eq!(settings.prayer_city_id, DHAKA_ID);
         assert_eq!(settings.prayer_reminders, ReminderSettings::default());
@@ -221,6 +225,7 @@ mod tests {
             monitor: Some("DISPLAY2".into()),
             auto_minimal: true,
             always_minimal: true,
+            sync_visualizer: true,
             idle_collapse_delay_secs: 45,
             prayer_city_id: 5_128_581,
             prayer_reminders: ReminderSettings {

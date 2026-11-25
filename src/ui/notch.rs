@@ -1,3 +1,4 @@
+mod playback_wave;
 mod pomodoro;
 
 use std::{
@@ -27,6 +28,7 @@ use crate::windows::notifications::{
 };
 use chrono::{DateTime, Local, NaiveDate, Utc};
 use gpui::{prelude::*, *};
+use playback_wave::{PEAK_INTERVAL, ReactiveWave, WaveFrame};
 use pomodoro::Pomodoro;
 
 const DATE_REVEAL_SECONDS: f32 = 0.38;
@@ -72,7 +74,8 @@ pub struct Notch {
 
     compact_size: (f32, f32),
     hovered: bool,
-    playing: bool,
+    playback_started: Option<Instant>,
+    reactive_wave: ReactiveWave,
     always_minimal: bool,
     idle_since: Option<Instant>,
     mode: Mode,
@@ -115,8 +118,12 @@ impl Notch {
         cx: &mut Context<Self>,
     ) -> Self {
         cx.observe_in(&appearance, window, |this, appearance, window, cx| {
+            let settings = appearance.read(cx);
             this.pomodoro
-                .clear_removed_session(&appearance.read(cx).pomodoro_session_names);
+                .clear_removed_session(&settings.pomodoro_session_names);
+            if !settings.sync_visualizer {
+                this.reactive_wave = ReactiveWave::default();
+            }
             this.sync_prayer_settings(cx);
             this.sync_idle_policy(cx);
             this.sync_placement(window, cx);
@@ -155,7 +162,11 @@ impl Notch {
                 let playing = manager.as_ref().is_some_and(SessionManager::is_playing);
                 if this
                     .update(cx, |notch, cx| {
-                        notch.playing = playing;
+                        if notch.playback_started.is_some() != playing {
+                            notch.playback_started = playing.then(Instant::now);
+                            notch.reactive_wave = ReactiveWave::default();
+                            cx.notify();
+                        }
                         notch.sync_idle_policy(cx);
                     })
                     .is_err()
@@ -168,18 +179,28 @@ impl Notch {
         let volume_watch = cx.spawn(async move |this, cx| {
             let executor = cx.background_executor().clone();
             loop {
-                let reading = executor.spawn(async { read_default_output() }).await;
+                let Ok(read_peak) = this.read_with(cx, |notch, cx| notch.should_read_peak(cx))
+                else {
+                    break;
+                };
+                let reading = executor
+                    .spawn(async move { read_default_output(read_peak) })
+                    .await;
                 if this
                     .update(cx, |notch, cx| {
+                        let now = Instant::now();
+                        let wave_changed = read_peak
+                            && notch.should_read_peak(cx)
+                            && notch
+                                .reactive_wave
+                                .push_peak(reading.as_ref().and_then(|output| output.peak), now);
                         let presses = notch
                             .volume_keys
                             .as_ref()
                             .map(VolumeKeyWatch::take_presses)
                             .unwrap_or_default();
-                        if notch
-                            .volume_feedback
-                            .update(reading, Instant::now(), presses)
-                        {
+                        let volume_changed = notch.volume_feedback.update(reading, now, presses);
+                        if wave_changed || volume_changed {
                             cx.notify();
                         }
                     })
@@ -187,7 +208,12 @@ impl Notch {
                 {
                     break;
                 }
-                executor.timer(Duration::from_millis(125)).await;
+                let interval = if read_peak {
+                    PEAK_INTERVAL
+                } else {
+                    Duration::from_millis(125)
+                };
+                executor.timer(interval).await;
             }
         });
         let listener = Listener::connect();
@@ -236,7 +262,8 @@ impl Notch {
             height,
             compact_size,
             hovered: false,
-            playing: false,
+            playback_started: None,
+            reactive_wave: ReactiveWave::default(),
             always_minimal,
             idle_since: None,
             mode,
@@ -302,6 +329,9 @@ impl Notch {
                 .update(cx, |player, cx| player.set_visible(music_visible, cx));
         }
         self.mode = mode;
+        if mode != Mode::Compact {
+            self.reactive_wave = ReactiveWave::default();
+        }
         self.calendar = None;
         self.sync_prayer_refresh(cx);
         if mode != Mode::Expanded(Page::Pomodoro) {
@@ -388,10 +418,16 @@ impl Notch {
         }
     }
 
+    fn should_read_peak(&self, cx: &App) -> bool {
+        self.mode == Mode::Compact
+            && self.playback_started.is_some()
+            && self.appearance.read(cx).sync_visualizer
+    }
+
     fn update_idle_start(&mut self, cx: &App) {
         if self.mode == Mode::Compact
             && !self.hovered
-            && !self.playing
+            && self.playback_started.is_none()
             && !self.pomodoro.in_cycle()
             && self.appearance.read(cx).auto_minimal
         {
@@ -415,7 +451,10 @@ impl Notch {
         }
 
         if self.mode == Mode::Collapsed
-            && (was_always_minimal || !auto_minimal || self.playing || self.pomodoro.in_cycle())
+            && (was_always_minimal
+                || !auto_minimal
+                || self.playback_started.is_some()
+                || self.pomodoro.in_cycle())
         {
             self.set_mode(self.hover_mode(), cx);
         }
@@ -861,6 +900,7 @@ impl Render for Notch {
         let settings = self.appearance.read(cx);
         let background = settings.background.color();
         let rounded = settings.corners == Corners::Rounded;
+        let sync_visualizer = settings.sync_visualizer;
         let prayer_visible = visible_page == Some(Page::PrayerTimes);
         let prayer = if prayer_visible || self.mode == Mode::Expanded(Page::PrayerTimes) {
             let now = Utc::now();
@@ -967,14 +1007,32 @@ impl Render for Notch {
             self.date_reveal_frame = None;
             self.date_reveal = self.date_reveal.min(date_limit);
         }
+        let date_opacity = self.date_reveal;
+        let wave = self
+            .playback_started
+            .filter(|_| {
+                self.mode == Mode::Compact
+                    && !calendar_open
+                    && standalone_reminder.is_none()
+                    && volume_hud.is_none()
+                    && date_opacity == 0.0
+                    && self.width >= self.compact_size.0 - 1.0
+            })
+            .and_then(|started| {
+                if sync_visualizer {
+                    self.reactive_wave.frame(now)
+                } else {
+                    Some(WaveFrame::looping(now.saturating_duration_since(started)))
+                }
+            });
         if self.animation.is_some()
             || self.date_reveal_frame.is_some()
             || page_transition.is_some()
             || volume.is_some_and(|frame| frame.animating)
+            || wave.as_ref().is_some_and(|frame| frame.animating)
         {
             window.request_animation_frame();
         }
-        let date_opacity = self.date_reveal;
         let player_opacity = ((expansion - 0.6) / 0.35).clamp(0.0, 1.0);
         let content_opacity = player_opacity * page_opacity;
         let page_body_visible = !calendar_open && content_opacity > 0.0;
@@ -1081,6 +1139,17 @@ impl Render for Notch {
                     .child(self.clock.clone())
             }
         };
+
+        let header = header.when_some(wave, |header, frame| {
+            header.relative().w_full().justify_center().child(
+                frame
+                    .bars()
+                    .absolute()
+                    .right(px(10.0))
+                    .top(px(0.0))
+                    .bottom(px(0.0)),
+            )
+        });
 
         notch
             .child(header)

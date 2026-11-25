@@ -3,8 +3,9 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use ::windows::Win32::{
     Foundation::{LPARAM, LRESULT, WPARAM},
     Media::Audio::{
-        Endpoints::IAudioEndpointVolume, IMMDeviceEnumerator, MMDeviceEnumerator, PlaySoundW,
-        SND_ALIAS, SND_ASYNC, SND_SYSTEM, eMultimedia, eRender,
+        Endpoints::{IAudioEndpointVolume, IAudioMeterInformation},
+        IMMDeviceEnumerator, MMDeviceEnumerator, PlaySoundW, SND_ALIAS, SND_ASYNC, SND_SYSTEM,
+        eMultimedia, eRender,
     },
     System::{
         Com::{
@@ -31,6 +32,7 @@ pub struct Volume {
 pub struct OutputVolume {
     pub device_id: String,
     pub volume: Volume,
+    pub peak: Option<f32>,
 }
 
 const VOLUME_UP: u8 = 1;
@@ -94,15 +96,15 @@ unsafe extern "system" fn on_volume_key(code: i32, message: WPARAM, data: LPARAM
     unsafe { CallNextHookEx(None, code, message, data) }
 }
 
-pub fn read_default_output() -> Option<OutputVolume> {
+pub fn read_default_output(read_peak: bool) -> Option<OutputVolume> {
     // The background task reads the endpoint in the same COM apartment that opens it.
     unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok().ok()? };
-    let result = read_endpoint();
+    let result = read_endpoint(read_peak);
     unsafe { CoUninitialize() };
     result
 }
 
-fn read_endpoint() -> Option<OutputVolume> {
+fn read_endpoint(read_peak: bool) -> Option<OutputVolume> {
     let devices: IMMDeviceEnumerator =
         unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_INPROC_SERVER) }.ok()?;
     let device = unsafe { devices.GetDefaultAudioEndpoint(eRender, eMultimedia) }.ok()?;
@@ -115,11 +117,20 @@ fn read_endpoint() -> Option<OutputVolume> {
         unsafe { device.Activate(CLSCTX_INPROC_SERVER, None) }.ok()?;
     let level = unsafe { endpoint.GetMasterVolumeLevelScalar() }.ok()?;
     let muted = unsafe { endpoint.GetMute() }.ok()?.as_bool();
+    // Endpoint peaks are measured before applying volume and mute.
+    let peak = if read_peak && !muted && level > 0.0 {
+        unsafe { device.Activate::<IAudioMeterInformation>(CLSCTX_INPROC_SERVER, None) }
+            .ok()
+            .and_then(|meter| unsafe { meter.GetPeakValue() }.ok())
+    } else {
+        None
+    };
     Some(OutputVolume {
         device_id,
         volume: Volume {
             percent: (level.clamp(0.0, 1.0) * 100.0).round() as u8,
             muted,
         },
+        peak,
     })
 }

@@ -207,6 +207,7 @@ mod tests {
         Some(OutputVolume {
             device_id: device.into(),
             volume: Volume { percent, muted },
+            peak: None,
         })
     }
 

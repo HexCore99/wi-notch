@@ -69,6 +69,7 @@ impl Render for GeneralPage {
         let settings = self.settings.read(cx);
         let auto = settings.auto_minimal;
         let always = settings.always_minimal;
+        let sync_visualizer = settings.sync_visualizer;
         let seconds = settings.idle_collapse_seconds();
         let auto_switch =
             setting_switch("auto-minimal", auto).on_click(cx.listener(|page, _, _, cx| {
@@ -84,6 +85,14 @@ impl Render for GeneralPage {
                     cx,
                 );
             }));
+        let sync_switch = setting_switch("sync-visualizer", sync_visualizer).on_click(cx.listener(
+            |page, _, _, cx| {
+                page.update_settings(
+                    |settings| settings.sync_visualizer = !settings.sync_visualizer,
+                    cx,
+                );
+            },
+        ));
         let delay = div()
             .flex()
             .items_center()
@@ -128,6 +137,10 @@ impl Render for GeneralPage {
                     setting_row("Idle collapse delay", delay),
                     setting_row(always_label, always_switch),
                 ],
+            ))
+            .child(setting_group(
+                "Playback",
+                [setting_row("Sync visualizer", sync_switch)],
             ))
             .when(self.save_failed, |page| page.child(save_error()))
     }
