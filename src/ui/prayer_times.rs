@@ -2,15 +2,18 @@ use adhan::Prayer;
 use chrono::{DateTime, TimeDelta, Utc};
 use gpui::{prelude::*, *};
 
-use crate::prayer::{DaySchedule, PRAYER_NAMES, PRAYERS, PrayerReminder, Schedule, Waqt};
+use crate::prayer::{
+    DaySchedule, PRAYER_NAMES, PRAYERS, PrayerReminder, Schedule, ScheduledPrayer, Waqt,
+};
 
 use super::notch::PAGE_BODY_WIDTH;
 
 const GOLD: u32 = 0xf2b74f;
+const MINT: u32 = 0x79ead8;
 const TEXT: u32 = 0xf4eee4;
 const MUTED: u32 = 0xa7a198;
-const TRACK_START: f32 = 8.0;
-const TRACK_END: f32 = PAGE_BODY_WIDTH - TRACK_START;
+const HERO_PADDING: f32 = 8.0;
+const TRACK_END: f32 = PAGE_BODY_WIDTH - 4.0;
 const MARKER_SIZE: f32 = 10.0;
 
 pub(super) fn reminder_banner(reminder: PrayerReminder) -> Div {
@@ -84,7 +87,7 @@ pub(super) fn panel(schedule: &Schedule, now: DateTime<Utc>, background: u32) ->
 
     let hero = div()
         .h(px(71.0))
-        .px(px(TRACK_START))
+        .px(px(HERO_PADDING))
         .flex()
         .items_center()
         .gap(px(8.0))
@@ -140,19 +143,32 @@ pub(super) fn panel(schedule: &Schedule, now: DateTime<Utc>, background: u32) ->
         .flex()
         .flex_col()
         .child(hero)
-        .child(timeline(schedule, day, active.as_ref(), now, background))
+        .child(timeline(
+            schedule,
+            day,
+            active.as_ref(),
+            next,
+            now,
+            background,
+        ))
 }
 
 fn timeline(
     schedule: &Schedule,
     day: Option<&DaySchedule>,
     active: Option<&Waqt<'_>>,
+    next: Option<ScheduledPrayer<'_>>,
     now: DateTime<Utc>,
     background: u32,
 ) -> Div {
     let reached = reached_checkpoints(day, now);
-    let isha_position = active.and_then(|waqt| isha_progress_position(waqt, now));
-    let fill_end = isha_position.or_else(|| {
+    let track_start = prayer_position(0);
+    let position = active
+        .map(|waqt| waqt.prayer)
+        .or_else(|| schedule.previous(now))
+        .filter(|prayer| day.is_some_and(|day| day.date == prayer.day.date))
+        .map(|prayer| progress_position(prayer, next, now));
+    let fill_end = position.or_else(|| {
         reached
             .iter()
             .rposition(|&reached| reached)
@@ -166,8 +182,8 @@ fn timeline(
             div()
                 .absolute()
                 .top(px(4.0))
-                .left(px(TRACK_START))
-                .w(px(TRACK_END - TRACK_START))
+                .left(px(track_start))
+                .w(px(TRACK_END - track_start))
                 .h(px(2.0))
                 .bg(rgb(0x393632)),
         )
@@ -176,8 +192,8 @@ fn timeline(
                 div()
                     .absolute()
                     .top(px(4.0))
-                    .left(px(TRACK_START))
-                    .w(px(end - TRACK_START))
+                    .left(px(track_start))
+                    .w(px(end - track_start))
                     .h(px(2.0))
                     .bg(rgb(GOLD)),
             )
@@ -216,20 +232,6 @@ fn timeline(
                         .bg(rgb(background))
                         .when(reached[index], |marker| {
                             marker.border_color(rgb(GOLD)).bg(rgb(GOLD))
-                        })
-                        .when(lit, |marker| {
-                            marker
-                                .when_some(isha_position, |marker, position| {
-                                    marker
-                                        .relative()
-                                        .left(px(position - prayer_position(index)))
-                                })
-                                .shadow(vec![BoxShadow {
-                                    color: rgba(0xf2b74f99).into(),
-                                    offset: point(px(0.0), px(0.0)),
-                                    blur_radius: px(10.0),
-                                    spread_radius: px(1.0),
-                                }])
                         }),
                 )
                 .child(
@@ -248,22 +250,71 @@ fn timeline(
                         .child(time),
                 )
         }))
+        .when_some(position, |row, position| {
+            row.child(progress_marker(position))
+        })
+}
+
+fn progress_marker(position: f32) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, (), window, _| {
+            let center = point(bounds.origin.x + px(position), bounds.center().y);
+            let at = |x, y| center + point(px(x), px(y));
+            let tail = 8.0_f32.min(position - prayer_position(0) + MARKER_SIZE / 2.0);
+            let glow_bounds = Bounds::new(at(-3.5, -3.5), size(px(7.0), px(7.0)));
+            window.paint_shadows(
+                glow_bounds,
+                px(3.5).into(),
+                &[BoxShadow {
+                    color: rgba(0x79ead870).into(),
+                    offset: point(px(0.0), px(0.0)),
+                    blur_radius: px(7.0),
+                    spread_radius: px(0.5),
+                }],
+            );
+
+            let mut drop = PathBuilder::fill();
+            drop.move_to(at(-tail, 0.0));
+            drop.cubic_bezier_to(at(0.0, -3.5), at(-tail * 0.65, -0.5), at(-2.8, -3.5));
+            drop.cubic_bezier_to(at(3.5, 0.0), at(1.9, -3.5), at(3.5, -1.9));
+            drop.cubic_bezier_to(at(0.0, 3.5), at(3.5, 1.9), at(1.9, 3.5));
+            drop.cubic_bezier_to(at(-tail, 0.0), at(-2.8, 3.5), at(-tail * 0.65, 0.5));
+            drop.close();
+            if let Ok(path) = drop.build() {
+                window.paint_path(path, rgb(MINT));
+            }
+        },
+    )
+    .absolute()
+    .top(px(0.0))
+    .left(px(0.0))
+    .w_full()
+    .h(px(MARKER_SIZE))
 }
 
 fn prayer_position(index: usize) -> f32 {
     (index as f32 + 0.5) * PAGE_BODY_WIDTH / PRAYER_NAMES.len() as f32
 }
 
-fn isha_progress_position(waqt: &Waqt<'_>, now: DateTime<Utc>) -> Option<f32> {
-    let prayer = waqt.prayer;
-    if PRAYERS[prayer.index] != Prayer::Isha {
-        return None;
-    }
+fn progress_position(
+    prayer: ScheduledPrayer<'_>,
+    next: Option<ScheduledPrayer<'_>>,
+    now: DateTime<Utc>,
+) -> f32 {
+    let start = prayer_position(prayer.index);
+    let Some(next) = next else { return start };
+    let end = if next.day.date == prayer.day.date {
+        prayer_position(next.index).max(start)
+    } else if PRAYERS[prayer.index] == Prayer::Isha && PRAYERS[next.index] == Prayer::Fajr {
+        TRACK_END
+    } else {
+        start
+    };
 
     let elapsed = (now - prayer.time).as_seconds_f64();
-    let duration = (waqt.end - prayer.time).as_seconds_f64();
-    let start = prayer_position(prayer.index);
-    Some(start + (TRACK_END - start) * (elapsed / duration) as f32)
+    let duration = (next.time - prayer.time).as_seconds_f64();
+    start + (end - start) * (elapsed / duration) as f32
 }
 
 fn reached_checkpoints(day: Option<&DaySchedule>, now: DateTime<Utc>) -> [bool; PRAYERS.len()] {
@@ -287,7 +338,7 @@ fn format_countdown(remaining: TimeDelta) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Schedule, TRACK_END, format_countdown, isha_progress_position, prayer_position,
+        Schedule, TRACK_END, format_countdown, prayer_position, progress_position,
         reached_checkpoints,
     };
     use crate::prayer::{DHAKA_ID, city};
@@ -308,28 +359,42 @@ mod tests {
     }
 
     #[test]
-    fn isha_progress_moves_to_the_track_end_and_restarts_at_fajr() {
+    fn marker_moves_between_prayers_and_restarts_at_the_next_fajr() {
         let noon = Utc.with_ymd_and_hms(2026, 11, 23, 6, 0, 0).unwrap();
         let city = city(DHAKA_ID);
         let schedule = Schedule::new(city, noon);
-        let isha = schedule.today().unwrap().times[4].unwrap();
-        let isha_waqt = schedule.active_waqt(isha).unwrap();
-        let next_fajr = isha_waqt.end;
+        let times = schedule.today().unwrap().times.map(Option::unwrap);
+        let position_at = |schedule: &Schedule, now| {
+            progress_position(schedule.previous(now).unwrap(), schedule.next(now), now)
+        };
+        for (index, pair) in times.windows(2).enumerate() {
+            let [time, next] = [pair[0], pair[1]];
+            let halfway = time + (next - time) / 2;
+            let start = prayer_position(index);
+            assert_eq!(position_at(&schedule, time), start);
+            assert_eq!(
+                position_at(&schedule, halfway),
+                start + (prayer_position(index + 1) - start) / 2.0
+            );
+        }
+
+        let isha = times[4];
+        let next_fajr = schedule.active_waqt(isha).unwrap().end;
         let halfway = isha + (next_fajr - isha) / 2;
-        let start = prayer_position(isha_waqt.prayer.index);
-        assert_eq!(isha_progress_position(&isha_waqt, isha), Some(start));
+        let start = prayer_position(4);
+        assert_eq!(position_at(&schedule, isha), start);
         assert_eq!(
-            isha_progress_position(&isha_waqt, halfway),
-            Some(start + (TRACK_END - start) / 2.0)
+            position_at(&schedule, halfway),
+            start + (TRACK_END - start) / 2.0
         );
 
         let before_fajr = next_fajr - TimeDelta::seconds(1);
         let schedule = Schedule::new(city, before_fajr);
         let isha_waqt = schedule.active_waqt(before_fajr).unwrap();
         let fajr_waqt = schedule.active_waqt(next_fajr).unwrap();
-        let before_end = isha_progress_position(&isha_waqt, before_fajr).unwrap();
+        let before_end = position_at(&schedule, before_fajr);
         assert!(before_end > TRACK_END - 0.01 && before_end <= TRACK_END);
-        assert_eq!(isha_progress_position(&fajr_waqt, next_fajr), None);
+        assert_eq!(position_at(&schedule, next_fajr), prayer_position(0));
 
         assert_eq!(
             reached_checkpoints(Some(isha_waqt.prayer.day), before_fajr),
