@@ -8,7 +8,7 @@ use gpui::{prelude::*, *};
 use super::{Mode, Notch, PAGE_BODY_WIDTH, Page, SettingsPage};
 use crate::{
     icons::{TOMATO_RED, tomato},
-    windows::audio::play_system_sound,
+    windows::audio::{AlertSound, play_alert_sound},
 };
 
 const ROUNDS: u8 = 4;
@@ -152,7 +152,7 @@ impl Notch {
         if !self.pomodoro.timer.finish_if_due(now) {
             return false;
         }
-        play_system_sound();
+        play_alert_sound(AlertSound::Pomodoro);
         self.sync_idle_policy(cx);
         cx.notify();
         true

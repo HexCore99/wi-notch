@@ -71,8 +71,8 @@ impl SizeAnimation {
             SizeTransition::Resize => (RESIZE_DURATION, None),
             SizeTransition::Shrink => {
                 // Keep the smallest notch large enough to remain visible during the bounce.
-                let width = to.0 - ((from.0 - to.0) * 0.12).clamp(0.0, 20.0_f32.min(to.0 * 0.25));
-                let height = to.1 - ((from.1 - to.1) * 0.12).clamp(0.0, 8.0_f32.min(to.1 * 0.25));
+                let width = to.0 - ((from.0 - to.0) * 0.06).clamp(0.0, 10.0_f32.min(to.0 * 0.125));
+                let height = to.1 - ((from.1 - to.1) * 0.06).clamp(0.0, 4.0_f32.min(to.1 * 0.125));
                 (PANEL_TRANSITION_DURATION, Some((width, height)))
             }
         };
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn shrinking_bounces_below_the_target_then_settles() {
         let expanded = (340.0, 162.0);
-        for (target, smallest) in [((150.0, 35.0), (130.0, 27.0)), ((64.0, 8.0), (48.0, 6.0))] {
+        for (target, smallest) in [((150.0, 35.0), (140.0, 31.0)), ((64.0, 8.0), (56.0, 7.0))] {
             let closing = SizeAnimation::new(expanded, target, SizeTransition::Shrink);
             assert_eq!(closing.sample_at(Duration::ZERO), (340.0, 162.0, false));
             assert_eq!(closing.min_size(), smallest);

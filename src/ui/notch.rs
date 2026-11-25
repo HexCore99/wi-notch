@@ -22,7 +22,7 @@ use crate::notch_geometry::{COLLAPSED_SIZE, EXPANDED_SIZE};
 use crate::prayer::{PrayerReminder, PrayerReminders, Schedule, city};
 use crate::ui::clock::Clock;
 use crate::windows::app_icons::{read_registered_icon, read_shell_icon};
-use crate::windows::audio::{VolumeKeyWatch, play_system_sound, read_default_output};
+use crate::windows::audio::{AlertSound, VolumeKeyWatch, play_alert_sound, read_default_output};
 use crate::windows::display::{Monitor, monitors, selected_monitor};
 use crate::windows::media::SessionManager;
 use crate::windows::notifications::{
@@ -428,7 +428,7 @@ impl Notch {
             if let Some(schedule) = &self.prayer_schedule
                 && let Some(reminder) = self.prayer_reminders.check(schedule, now)
             {
-                play_system_sound();
+                play_alert_sound(AlertSound::Prayer);
                 self.prayer_banner = Some((reminder, instant + Duration::from_secs(4)));
                 cx.notify();
                 return;
@@ -668,6 +668,9 @@ impl Notch {
             );
             self.sync_notification_icons(snapshot.apps, cx);
 
+            if newest.is_some() {
+                play_alert_sound(AlertSound::Notification);
+            }
             if let Some(key) = newest
                 && !self.always_minimal
                 && self.prayer_banner.is_none()

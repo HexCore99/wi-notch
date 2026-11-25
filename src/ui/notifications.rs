@@ -151,11 +151,13 @@ impl Notifications {
         let current: HashSet<_> = items.iter().map(|toast| toast.key).collect();
         self.unread.retain(|key| current.contains(key));
         let mut newest = None;
-        if self.initialized && !open {
+        if self.initialized {
             let previous: HashSet<_> = self.items.iter().map(|toast| toast.key).collect();
             for toast in items.iter().filter(|toast| !previous.contains(&toast.key)) {
                 newest.get_or_insert(toast.key);
-                self.unread.insert(toast.key);
+                if !open {
+                    self.unread.insert(toast.key);
+                }
             }
         }
         if open && self.scroll.target > 0.0 {
@@ -740,15 +742,19 @@ mod tests {
     }
 
     #[test]
-    fn baseline_repeated_reads_and_open_list_do_not_produce_arrivals() {
+    fn arrivals_are_reported_once_and_visible_items_stay_read() {
         let mut list = Notifications::new(Access::Allowed);
         assert_eq!(list.sync(vec![toast(1, 10)], false), (true, None));
         assert_eq!(list.sync(vec![toast(1, 10)], false), (false, None));
         assert_eq!(
             list.sync(vec![toast(2, 20), toast(1, 10)], true),
-            (true, None)
+            (true, Some(ToastKey { id: 2, created: 20 }))
         );
         assert!(list.unread.is_empty());
+        assert_eq!(
+            list.sync(vec![toast(2, 20), toast(1, 10)], false),
+            (false, None)
+        );
     }
 
     #[test]

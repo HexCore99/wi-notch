@@ -4,8 +4,8 @@ use ::windows::Win32::{
     Foundation::{LPARAM, LRESULT, WPARAM},
     Media::Audio::{
         Endpoints::{IAudioEndpointVolume, IAudioMeterInformation},
-        IMMDeviceEnumerator, MMDeviceEnumerator, PlaySoundW, SND_ALIAS, SND_ASYNC, SND_SYSTEM,
-        eMultimedia, eRender,
+        IMMDeviceEnumerator, MMDeviceEnumerator, PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT,
+        SND_NOSTOP, SND_SYSTEM, eMultimedia, eRender,
     },
     System::{
         Com::{
@@ -22,6 +22,7 @@ use ::windows::Win32::{
         },
     },
 };
+use ::windows::core::PCWSTR;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Volume {
@@ -39,13 +40,27 @@ const VOLUME_UP: u8 = 1;
 const VOLUME_DOWN: u8 = 2;
 static PRESSED_VOLUME_KEYS: AtomicU8 = AtomicU8::new(0);
 
-pub fn play_system_sound() {
+pub enum AlertSound {
+    Notification,
+    Prayer,
+    Pomodoro,
+}
+
+pub fn play_alert_sound(sound: AlertSound) {
+    // The embedded bytes stay valid for the duration of asynchronous playback.
+    let wav: &'static [u8] = match sound {
+        AlertSound::Notification => include_bytes!("../../assets/sounds/notification.wav"),
+        AlertSound::Prayer => include_bytes!("../../assets/sounds/prayer.wav"),
+        AlertSound::Pomodoro => include_bytes!("../../assets/sounds/pomodoro.wav"),
+    };
+    let flags = SND_MEMORY | SND_ASYNC | SND_NODEFAULT | SND_SYSTEM;
+    let flags = if matches!(sound, AlertSound::Notification) {
+        flags | SND_NOSTOP
+    } else {
+        flags
+    };
     unsafe {
-        let _ = PlaySoundW(
-            ::windows::core::w!("SystemAsterisk"),
-            None,
-            SND_ALIAS | SND_ASYNC | SND_SYSTEM,
-        );
+        let _ = PlaySoundW(PCWSTR(wav.as_ptr().cast()), None, flags);
     }
 }
 
