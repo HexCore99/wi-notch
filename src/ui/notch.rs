@@ -6,7 +6,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::animation::{PageDirection, SizeAnimation, SizeTransition, page_transition_frame};
+use super::animation::{
+    PageDirection, SizeAnimation, SizeTransition, closing_panel_opacity, page_transition_frame,
+};
 use super::calendar::{self, Calendar};
 use super::music_player::MusicPlayer;
 use super::notifications::{
@@ -69,6 +71,12 @@ enum Mode {
     Preview(ToastKey),
 }
 
+#[derive(Clone, Copy)]
+struct ClosingPanel {
+    mode: Mode,
+    calendar: Option<Calendar>,
+}
+
 pub struct Notch {
     pub width: f32,
     pub height: f32,
@@ -83,6 +91,7 @@ pub struct Notch {
     page: Page,
     target_size: (f32, f32),
     animation: Option<SizeAnimation>,
+    closing_panel: Option<ClosingPanel>,
     page_switch: Option<(Instant, PageDirection, Page)>,
     date_reveal: f32,
     date_reveal_frame: Option<Instant>,
@@ -276,6 +285,7 @@ impl Notch {
             page: Page::Music,
             target_size: (width, height),
             animation: None,
+            closing_panel: None,
             page_switch: None,
             date_reveal: 0.0,
             date_reveal_frame: None,
@@ -334,6 +344,12 @@ impl Notch {
             self.music_player
                 .update(cx, |player, cx| player.set_visible(music_visible, cx));
         }
+        self.closing_panel = (matches!(mode, Mode::Compact | Mode::Collapsed)
+            && matches!(self.mode, Mode::Expanded(_) | Mode::Notifications))
+        .then_some(ClosingPanel {
+            mode: self.mode,
+            calendar: self.calendar,
+        });
         self.mode = mode;
         if mode != Mode::Compact {
             self.reactive_wave = ReactiveWave::default();
@@ -343,7 +359,7 @@ impl Notch {
         if mode != Mode::Expanded(Page::Pomodoro) {
             self.close_pomodoro_menu(cx);
         }
-        if !matches!(mode, Mode::Expanded(_)) {
+        if !matches!(mode, Mode::Expanded(_)) && self.closing_panel.is_none() {
             self.page_switch = None;
         }
         if !matches!(mode, Mode::Preview(_)) {
@@ -891,7 +907,10 @@ impl Render for Notch {
         if page_transition.is_none() {
             self.page_switch = None;
         }
-        let visible_page = match (self.mode, &page_transition) {
+        let closing = self.closing_panel;
+        let shown_mode = closing.map_or(self.mode, |panel| panel.mode);
+        let shown_calendar = closing.map_or(self.calendar, |panel| panel.calendar);
+        let visible_page = match (shown_mode, &page_transition) {
             (Mode::Expanded(_), Some((frame, previous))) if !frame.incoming => Some(*previous),
             (Mode::Expanded(page), _) => Some(page),
             _ => None,
@@ -987,6 +1006,10 @@ impl Render for Notch {
                 self.animation = None;
             }
         }
+        if closing.is_some() && self.animation.is_none() {
+            self.closing_panel = None;
+            self.page_switch = None;
+        }
         let volume_stretch = volume_hud.map_or(0.0, |frame| frame.stretch);
         if resizing || self.volume_stretch != volume_stretch {
             self.volume_stretch = volume_stretch;
@@ -1035,14 +1058,19 @@ impl Render for Notch {
         if self.animation.is_some()
             || self.date_reveal_frame.is_some()
             || page_transition.is_some()
+            || closing.is_some()
             || volume.is_some_and(|frame| frame.animating)
             || wave.as_ref().is_some_and(|frame| frame.animating)
         {
             window.request_animation_frame();
         }
-        let player_opacity = ((expansion - 0.6) / 0.35).clamp(0.0, 1.0);
+        let player_opacity = if closing.is_some() {
+            closing_panel_opacity(expansion)
+        } else {
+            ((expansion - 0.6) / 0.35).clamp(0.0, 1.0)
+        };
         let content_opacity = player_opacity * page_opacity;
-        let page_body_visible = !calendar_open && content_opacity > 0.0;
+        let page_body_visible = shown_calendar.is_none() && content_opacity > 0.0;
 
         let notch = div()
             .id("notch")
@@ -1073,7 +1101,7 @@ impl Render for Notch {
             );
         }
 
-        if self.mode == Mode::Collapsed {
+        if self.mode == Mode::Collapsed && closing.is_none() {
             return notch;
         }
 
@@ -1094,7 +1122,13 @@ impl Render for Notch {
             .h(px(self.compact_size.1))
             .flex_none()
             .flex()
-            .items_center();
+            .items_center()
+            .when(self.mode == Mode::Collapsed, |header| {
+                let opacity = ((self.height - COLLAPSED_SIZE.1)
+                    / (self.compact_size.1 - COLLAPSED_SIZE.1))
+                    .clamp(0.0, 1.0);
+                header.opacity(opacity)
+            });
         let header = if let Some((reminder, _)) = self.prayer_banner {
             header.child(prayer_times::reminder_banner(reminder))
         } else if let Some(volume) = volume {
@@ -1110,11 +1144,17 @@ impl Render for Notch {
                 header.relative().left(page_offset).opacity(page_opacity)
             });
             if let Some((schedule, now)) = prayer {
+                let (reveal, opacity) = if closing.is_some() {
+                    (date_opacity, 1.0)
+                } else {
+                    (1.0, player_opacity)
+                };
                 header.child(
-                    prayer_times::header(schedule, now, self.date_label(today, cx))
-                        .opacity(player_opacity),
+                    prayer_times::header(schedule, now, self.date_label(today, cx), reveal)
+                        .opacity(opacity),
                 )
-            } else if self.mode == Mode::Compact && self.pomodoro.in_cycle() {
+            } else if self.mode == Mode::Compact && self.pomodoro.in_cycle() && date_opacity == 0.0
+            {
                 header
                     .relative()
                     .w_full()
@@ -1132,16 +1172,21 @@ impl Render for Notch {
                     )
             } else {
                 header
-                    .gap(px(8.0 * date_opacity))
                     .when(date_opacity > 0.0, |header| {
-                        header.child(
-                            self.date_label(today, cx)
-                                .w(px(104.0 * date_opacity))
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .opacity(date_opacity)
-                                .text_size(px(12.0)),
-                        )
+                        let date_width = 104.0;
+                        let gap = 8.0;
+                        let shift = (date_width + gap) * (1.0 - date_opacity) / 2.0;
+                        header
+                            .relative()
+                            .left(page_offset - px(shift))
+                            .gap(px(gap))
+                            .child(
+                                self.date_label(today, cx)
+                                    .w(px(date_width))
+                                    .whitespace_nowrap()
+                                    .opacity(date_opacity)
+                                    .text_size(px(12.0)),
+                            )
                     })
                     .child(self.clock.clone())
             }
@@ -1160,7 +1205,7 @@ impl Render for Notch {
 
         notch
             .child(header)
-            .when_some(self.calendar, |notch, calendar| {
+            .when_some(shown_calendar, |notch, calendar| {
                 notch.child(calendar.panel(today, cx).opacity(player_opacity))
             })
             .when(
@@ -1209,7 +1254,9 @@ impl Render for Notch {
                 )
             })
             .when(
-                !calendar_open && matches!(self.mode, Mode::Expanded(_)) && player_opacity > 0.0,
+                shown_calendar.is_none()
+                    && matches!(shown_mode, Mode::Expanded(_))
+                    && player_opacity > 0.0,
                 |notch| {
                     notch
                         .child(self.page_arrow(PageDirection::Left, player_opacity, cx))
@@ -1217,35 +1264,52 @@ impl Render for Notch {
                 },
             )
             .when(
-                !calendar_open && self.mode == Mode::Notifications,
+                shown_calendar.is_none()
+                    && shown_mode == Mode::Notifications
+                    && (closing.is_none() || player_opacity > 0.0),
                 |notch| {
                     let view = cx.weak_entity();
                     let dismiss_view = view.clone();
-                    let height = self.height.min(target.1) - self.compact_size.1;
-                    notch.child(self.notifications.panel(
-                        height,
-                        window,
-                        cx.listener(move |this, event: &ScrollWheelEvent, window, cx| {
-                            if this
-                                .notifications
-                                .scroll(height, event.delta, window.line_height())
-                            {
-                                cx.notify();
-                            }
-                        }),
-                        cx.listener(|this, _, _, cx| this.request_notification_access(cx)),
-                        move |key, cx| {
-                            let _ = view.update(cx, |this, cx| this.open_notification_app(key, cx));
-                        },
-                        move |key, cx| {
-                            let _ = dismiss_view
-                                .update(cx, |notch, cx| notch.dismiss_notification(key, cx));
-                        },
-                    ))
+                    let height = if closing.is_some() {
+                        self.height
+                    } else {
+                        self.height.min(target.1)
+                    } - self.compact_size.1;
+                    notch.child(
+                        self.notifications
+                            .panel(
+                                height,
+                                window,
+                                cx.listener(move |this, event: &ScrollWheelEvent, window, cx| {
+                                    if this.notifications.scroll(
+                                        height,
+                                        event.delta,
+                                        window.line_height(),
+                                    ) {
+                                        cx.notify();
+                                    }
+                                }),
+                                cx.listener(|this, _, _, cx| this.request_notification_access(cx)),
+                                move |key, cx| {
+                                    let _ = view
+                                        .update(cx, |this, cx| this.open_notification_app(key, cx));
+                                },
+                                move |key, cx| {
+                                    let _ = dismiss_view.update(cx, |notch, cx| {
+                                        notch.dismiss_notification(key, cx)
+                                    });
+                                },
+                            )
+                            .opacity(if closing.is_some() {
+                                player_opacity
+                            } else {
+                                1.0
+                            }),
+                    )
                 },
             )
             .when(
-                matches!(self.mode, Mode::Expanded(_) | Mode::Notifications)
+                matches!(shown_mode, Mode::Expanded(_) | Mode::Notifications)
                     && player_opacity > 0.0,
                 |notch| {
                     notch
@@ -1275,5 +1339,16 @@ impl Render for Notch {
                         )
                 },
             )
+            .when(closing.is_some() && player_opacity > 0.0, |notch| {
+                notch.child(
+                    div()
+                        .absolute()
+                        .top(px(0.0))
+                        .right(px(0.0))
+                        .bottom(px(0.0))
+                        .left(px(0.0))
+                        .occlude(),
+                )
+            })
     }
 }

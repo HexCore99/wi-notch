@@ -22,22 +22,37 @@ pub(super) fn reminder_banner(reminder: PrayerReminder) -> Div {
         .child(reminder.message())
 }
 
-pub(super) fn header(schedule: &Schedule, now: DateTime<Utc>, date: impl IntoElement) -> Div {
+pub(super) fn header(
+    schedule: &Schedule,
+    now: DateTime<Utc>,
+    date: impl IntoElement,
+    reveal: f32,
+) -> Div {
     let local = now.with_timezone(&schedule.city.zone);
     div()
         .max_w(px(264.0))
         .flex()
         .items_center()
-        .gap(px(13.0))
+        .gap(px(13.0 * reveal))
         .whitespace_nowrap()
         .text_size(px(12.0))
-        .child(div().flex_none().relative().left(px(-5.0)).child(date))
         .child(
             div()
+                .flex()
+                .items_center()
                 .min_w(px(0.0))
-                .truncate()
-                .text_color(rgb(GOLD))
-                .child(schedule.city.name),
+                .max_w(px(264.0 * reveal))
+                .gap(px(13.0))
+                .overflow_hidden()
+                .opacity(reveal)
+                .child(div().flex_none().child(date))
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .truncate()
+                        .text_color(rgb(GOLD))
+                        .child(schedule.city.name),
+                ),
         )
         .child(
             div()

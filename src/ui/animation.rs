@@ -123,6 +123,10 @@ fn smoothstep(progress: f32) -> f32 {
     progress * progress * (3.0 - 2.0 * progress)
 }
 
+pub(super) fn closing_panel_opacity(expansion: f32) -> f32 {
+    smoothstep(((expansion - 0.55) / 0.45).clamp(0.0, 1.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,6 +160,17 @@ mod tests {
             opening.sample_at(PANEL_TRANSITION_DURATION),
             (340.0, 162.0, true)
         );
+    }
+
+    #[test]
+    fn closing_panel_fades_before_the_rebound() {
+        assert_eq!(closing_panel_opacity(1.0), 1.0);
+        let just_started = closing_panel_opacity(0.98);
+        let halfway = closing_panel_opacity(0.775);
+        assert!(just_started > halfway && just_started < 1.0);
+        assert!((halfway - 0.5).abs() < 0.001);
+        assert_eq!(closing_panel_opacity(0.55), 0.0);
+        assert_eq!(closing_panel_opacity(0.0), 0.0);
     }
 
     #[test]
