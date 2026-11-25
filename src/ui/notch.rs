@@ -32,6 +32,7 @@ use playback_wave::{PEAK_INTERVAL, ReactiveWave, WaveFrame};
 use pomodoro::Pomodoro;
 
 const DATE_REVEAL_SECONDS: f32 = 0.38;
+const PLAYBACK_POLL_INTERVAL: Duration = Duration::from_millis(150);
 const PAGE_ARROW_WIDTH: f32 = 24.0;
 const PAGE_ARROW_HEIGHT: f32 = 26.0;
 pub(super) const PAGE_BODY_WIDTH: f32 = EXPANDED_SIZE.0 - PAGE_ARROW_WIDTH * 2.0;
@@ -173,7 +174,12 @@ impl Notch {
                 {
                     break;
                 }
-                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let interval = if manager.is_some() {
+                    PLAYBACK_POLL_INTERVAL
+                } else {
+                    Duration::from_secs(1)
+                };
+                cx.background_executor().timer(interval).await;
             }
         });
         let volume_watch = cx.spawn(async move |this, cx| {
@@ -1018,11 +1024,12 @@ impl Render for Notch {
                     && date_opacity == 0.0
                     && self.width >= self.compact_size.0 - 1.0
             })
-            .and_then(|started| {
+            .map(|started| {
+                let elapsed = now.saturating_duration_since(started);
                 if sync_visualizer {
-                    self.reactive_wave.frame(now)
+                    self.reactive_wave.frame(now, elapsed)
                 } else {
-                    Some(WaveFrame::looping(now.saturating_duration_since(started)))
+                    WaveFrame::looping(elapsed)
                 }
             });
         if self.animation.is_some()
