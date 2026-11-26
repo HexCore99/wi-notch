@@ -320,7 +320,7 @@ impl Notifications {
 
         let message = match self.access {
             Access::Unpackaged => {
-                "Launch the registered development package to read Windows notifications."
+                "Launch a registered copy of wi-notch to read Windows notifications."
             }
             Access::Unavailable => "Windows notification access is unavailable.",
             Access::Denied => {

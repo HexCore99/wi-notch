@@ -52,6 +52,7 @@ pub struct AppearanceSettings {
     pub prayer_city_id: u32,
     pub prayer_reminders: ReminderSettings,
     pub pomodoro_session_names: Vec<String>,
+    pub pomodoro_repeat_sound: bool,
 }
 
 impl Default for AppearanceSettings {
@@ -69,6 +70,7 @@ impl Default for AppearanceSettings {
             prayer_city_id: DHAKA_ID,
             prayer_reminders: ReminderSettings::default(),
             pomodoro_session_names: Vec::new(),
+            pomodoro_repeat_sound: true,
         }
     }
 }
@@ -152,6 +154,7 @@ mod tests {
             prayer_city_id: DHAKA_ID,
             prayer_reminders: ReminderSettings::default(),
             pomodoro_session_names: Vec::new(),
+            pomodoro_repeat_sound: true,
         };
 
         assert_eq!(AppearanceSettings::load_from(directory.path()), defaults);
@@ -181,6 +184,7 @@ mod tests {
         assert_eq!(settings.prayer_city_id, DHAKA_ID);
         assert_eq!(settings.prayer_reminders, ReminderSettings::default());
         assert!(settings.pomodoro_session_names.is_empty());
+        assert!(settings.pomodoro_repeat_sound);
         Ok(())
     }
 
@@ -233,6 +237,7 @@ mod tests {
                 at_start: false,
             },
             pomodoro_session_names: vec!["Study (DSA)".to_owned(), "Work".to_owned()],
+            pomodoro_repeat_sound: false,
         };
 
         settings.save_to(&directory)?;

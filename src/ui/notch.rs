@@ -31,7 +31,7 @@ use crate::windows::notifications::{
 use chrono::{DateTime, Local, NaiveDate, Utc};
 use gpui::{prelude::*, *};
 use playback_wave::{PEAK_INTERVAL, ReactiveWave, WaveFrame};
-use pomodoro::Pomodoro;
+use pomodoro::{PROMPT_HEIGHT, Pomodoro};
 
 const DATE_REVEAL_SECONDS: f32 = 0.38;
 const PLAYBACK_POLL_INTERVAL: Duration = Duration::from_millis(150);
@@ -135,6 +135,7 @@ impl Notch {
                 this.reactive_wave = ReactiveWave::default();
             }
             this.sync_prayer_settings(cx);
+            this.sync_pomodoro_reminder(cx);
             this.sync_idle_policy(cx);
             this.sync_placement(window, cx);
             cx.notify();
@@ -551,6 +552,7 @@ impl Notch {
         &self,
         direction: PageDirection,
         opacity: f32,
+        prompt_height: f32,
         cx: &Context<Self>,
     ) -> Stateful<Div> {
         let left = matches!(direction, PageDirection::Left);
@@ -562,7 +564,9 @@ impl Notch {
         div()
             .id(id)
             .absolute()
-            .top(px(((self.height - PAGE_ARROW_HEIGHT) / 2.0).max(0.0)))
+            .top(px(((self.height + prompt_height - PAGE_ARROW_HEIGHT)
+                / 2.0)
+                .max(0.0)))
             .when(left, |arrow| arrow.left(px(0.0)))
             .when(!left, |arrow| arrow.right(px(0.0)))
             .w(px(PAGE_ARROW_WIDTH))
@@ -673,6 +677,7 @@ impl Notch {
             }
             if let Some(key) = newest
                 && !self.always_minimal
+                && !self.pomodoro.awaiting_choice()
                 && self.prayer_banner.is_none()
                 && matches!(
                     self.mode,
@@ -871,8 +876,12 @@ impl Notch {
 
 impl Render for Notch {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let pomodoro_prompt = self.pomodoro.awaiting_choice();
+        let prompt_height = if pomodoro_prompt { PROMPT_HEIGHT } else { 0.0 };
+        let panel_top = self.compact_size.1 + prompt_height;
         let resting_size = match self.mode {
             Mode::Compact => Some(self.compact_size),
+            Mode::Collapsed if pomodoro_prompt => Some(self.compact_size),
             Mode::Collapsed => Some(COLLAPSED_SIZE),
             _ => None,
         };
@@ -950,13 +959,16 @@ impl Render for Notch {
         });
         let volume = self.volume_feedback.frame(Instant::now());
         let standalone_reminder = self.prayer_banner.filter(|_| {
-            matches!(
-                self.mode,
-                Mode::Compact | Mode::Collapsed | Mode::Preview(_)
-            )
+            !pomodoro_prompt
+                && matches!(
+                    self.mode,
+                    Mode::Compact | Mode::Collapsed | Mode::Preview(_)
+                )
         });
         let volume_hud = volume.filter(|_| {
-            standalone_reminder.is_none() && matches!(self.mode, Mode::Compact | Mode::Collapsed)
+            !pomodoro_prompt
+                && standalone_reminder.is_none()
+                && matches!(self.mode, Mode::Compact | Mode::Collapsed)
         });
         let target = if calendar_open {
             (
@@ -970,6 +982,7 @@ impl Render for Notch {
         } else {
             match self.mode {
                 Mode::Compact => self.compact_size,
+                Mode::Collapsed if pomodoro_prompt => self.compact_size,
                 Mode::Collapsed => COLLAPSED_SIZE,
                 Mode::Expanded(_) => EXPANDED_SIZE,
                 Mode::Notifications => (
@@ -979,7 +992,14 @@ impl Render for Notch {
                 Mode::Preview(_) => (EXPANDED_SIZE.0, PREVIEW_HEIGHT),
             }
         };
-        let target = (target.0, target.1.min(screen_height));
+        let target = (
+            if pomodoro_prompt {
+                EXPANDED_SIZE.0
+            } else {
+                target.0
+            },
+            (target.1 + prompt_height).min(screen_height),
+        );
         if target != self.target_size {
             let previous_height = self.target_size.1;
             let transition = if volume_hud.is_some() {
@@ -1023,6 +1043,15 @@ impl Render for Notch {
         let expansion = ((self.width - self.compact_size.0)
             / (EXPANDED_SIZE.0 - self.compact_size.0))
             .clamp(0.0, 1.0);
+        // The prompt keeps the notch wide while the panel beneath it shrinks.
+        let panel_expansion = if pomodoro_prompt {
+            expansion.min(
+                ((self.height - panel_top) / (EXPANDED_SIZE.1 - self.compact_size.1))
+                    .clamp(0.0, 1.0),
+            )
+        } else {
+            expansion
+        };
 
         // Let the date reveal gradually even when the window width grows quickly.
         let date_limit = if volume_hud.is_some() {
@@ -1068,9 +1097,9 @@ impl Render for Notch {
             window.request_animation_frame();
         }
         let player_opacity = if closing.is_some() {
-            closing_panel_opacity(expansion)
+            closing_panel_opacity(panel_expansion)
         } else {
-            ((expansion - 0.6) / 0.35).clamp(0.0, 1.0)
+            ((panel_expansion - 0.6) / 0.35).clamp(0.0, 1.0)
         };
         let content_opacity = player_opacity * page_opacity;
         let page_body_visible = shown_calendar.is_none() && content_opacity > 0.0;
@@ -1104,7 +1133,7 @@ impl Render for Notch {
             );
         }
 
-        if self.mode == Mode::Collapsed && closing.is_none() {
+        if self.mode == Mode::Collapsed && closing.is_none() && !pomodoro_prompt {
             return notch;
         }
 
@@ -1126,7 +1155,7 @@ impl Render for Notch {
             .flex_none()
             .flex()
             .items_center()
-            .when(self.mode == Mode::Collapsed, |header| {
+            .when(self.mode == Mode::Collapsed && !pomodoro_prompt, |header| {
                 let opacity = ((self.height - COLLAPSED_SIZE.1)
                     / (self.compact_size.1 - COLLAPSED_SIZE.1))
                     .clamp(0.0, 1.0);
@@ -1208,6 +1237,9 @@ impl Render for Notch {
 
         notch
             .child(header)
+            .when(pomodoro_prompt, |notch| {
+                notch.child(self.pomodoro_prompt(cx))
+            })
             .when_some(shown_calendar, |notch, calendar| {
                 notch.child(calendar.panel(today, cx).opacity(player_opacity))
             })
@@ -1249,7 +1281,7 @@ impl Render for Notch {
                 notch.child(
                     div()
                         .absolute()
-                        .top(px(self.compact_size.1))
+                        .top(px(panel_top))
                         .bottom(px(0.0))
                         .left(px(PAGE_ARROW_WIDTH))
                         .right(px(PAGE_ARROW_WIDTH))
@@ -1262,8 +1294,18 @@ impl Render for Notch {
                     && player_opacity > 0.0,
                 |notch| {
                     notch
-                        .child(self.page_arrow(PageDirection::Left, player_opacity, cx))
-                        .child(self.page_arrow(PageDirection::Right, player_opacity, cx))
+                        .child(self.page_arrow(
+                            PageDirection::Left,
+                            player_opacity,
+                            prompt_height,
+                            cx,
+                        ))
+                        .child(self.page_arrow(
+                            PageDirection::Right,
+                            player_opacity,
+                            prompt_height,
+                            cx,
+                        ))
                 },
             )
             .when(
@@ -1277,7 +1319,7 @@ impl Render for Notch {
                         self.height
                     } else {
                         self.height.min(target.1)
-                    } - self.compact_size.1;
+                    } - panel_top;
                     notch.child(
                         self.notifications
                             .panel(
@@ -1346,7 +1388,7 @@ impl Render for Notch {
                 notch.child(
                     div()
                         .absolute()
-                        .top(px(0.0))
+                        .top(px(if pomodoro_prompt { panel_top } else { 0.0 }))
                         .right(px(0.0))
                         .bottom(px(0.0))
                         .left(px(0.0))

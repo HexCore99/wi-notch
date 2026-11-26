@@ -1,7 +1,7 @@
 use gpui::{prelude::*, *};
 
 use super::{
-    CONTROL_BACKGROUND, CONTROL_HOVER, MUTED_TEXT,
+    CONTROL_BACKGROUND, CONTROL_HOVER, MUTED_TEXT, setting_group, setting_row, setting_switch,
     text_input::{TextChanged, TextInput},
 };
 use crate::appearance::AppearanceSettings;
@@ -66,7 +66,7 @@ impl PomodoroPage {
         }
 
         settings.pomodoro_session_names.push(name.to_owned());
-        if self.save_sessions(settings, cx) {
+        if self.save_settings(settings, cx) {
             self.input.update(cx, TextInput::clear);
         }
     }
@@ -76,7 +76,7 @@ impl PomodoroPage {
         let names = &mut settings.pomodoro_session_names;
         if index < names.len() {
             names.remove(index);
-            self.save_sessions(settings, cx);
+            self.save_settings(settings, cx);
         }
     }
 
@@ -88,13 +88,19 @@ impl PomodoroPage {
         }
         let name = names.remove(from);
         names.insert(to, name);
-        self.save_sessions(settings, cx);
+        self.save_settings(settings, cx);
     }
 
-    fn save_sessions(&mut self, settings: AppearanceSettings, cx: &mut Context<Self>) -> bool {
+    fn toggle_repeat_sound(&mut self, cx: &mut Context<Self>) {
+        let mut settings = self.settings.read(cx).clone();
+        settings.pomodoro_repeat_sound = !settings.pomodoro_repeat_sound;
+        self.save_settings(settings, cx);
+    }
+
+    fn save_settings(&mut self, settings: AppearanceSettings, cx: &mut Context<Self>) -> bool {
         if let Err(error) = settings.save() {
-            eprintln!("Failed to save Pomodoro sessions: {error}");
-            self.error = Some("Couldn’t save the session list. Try again.");
+            eprintln!("Failed to save Pomodoro settings: {error}");
+            self.error = Some("Couldn’t save Pomodoro settings. Try again.");
             cx.notify();
             return false;
         }
@@ -166,7 +172,8 @@ fn session_control(id: &'static str) -> Stateful<Div> {
 impl Render for PomodoroPage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let can_add = !self.input.read(cx).value().trim().is_empty();
-        let names = &self.settings.read(cx).pomodoro_session_names;
+        let settings = self.settings.read(cx);
+        let names = &settings.pomodoro_session_names;
         div()
             .flex()
             .flex_col()
@@ -177,6 +184,14 @@ impl Render for PomodoroPage {
                     cx.stop_propagation();
                 }
             }))
+            .child(setting_group(
+                "Reminders",
+                [setting_row(
+                    "Repeat sound every 30 seconds",
+                    setting_switch("pomodoro-repeat-sound", settings.pomodoro_repeat_sound)
+                        .on_click(cx.listener(|page, _, _, cx| page.toggle_repeat_sound(cx))),
+                )],
+            ))
             .child(
                 div()
                     .text_size(px(12.0))

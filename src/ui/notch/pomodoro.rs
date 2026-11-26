@@ -11,6 +11,8 @@ use crate::{
     windows::audio::{AlertSound, play_alert_sound},
 };
 
+pub(super) const PROMPT_HEIGHT: f32 = 38.0;
+const REMINDER_INTERVAL: Duration = Duration::from_secs(30);
 const ROUNDS: u8 = 4;
 const PURPLE: u32 = 0xcf8fec;
 const MUTED: u32 = 0xa7a2ae;
@@ -41,6 +43,7 @@ enum State {
     #[default]
     Idle,
     Ready,
+    AwaitingChoice,
     Running(Instant),
     Paused(Duration),
 }
@@ -48,6 +51,7 @@ enum State {
 #[derive(Clone, Copy)]
 enum Action {
     Toggle,
+    SkipPrompt,
     Stop,
     Reset,
 }
@@ -64,7 +68,7 @@ impl Timer {
         match self.state {
             State::Running(deadline) => deadline.saturating_duration_since(now),
             State::Paused(remaining) => remaining,
-            State::Idle | State::Ready => self.phase.duration(),
+            State::Idle | State::Ready | State::AwaitingChoice => self.phase.duration(),
         }
     }
 
@@ -90,6 +94,15 @@ impl Timer {
                     _ => State::Running(now + remaining),
                 };
             }
+            Action::SkipPrompt if self.state == State::AwaitingChoice => {
+                if self.phase == Phase::Focus {
+                    self.state = State::Ready;
+                } else {
+                    self.advance_from_break();
+                    self.state = State::Running(now + self.phase.duration());
+                }
+            }
+            Action::SkipPrompt => {}
             Action::Stop => *self = Self::default(),
             Action::Reset if self.state != State::Idle => self.state = State::Ready,
             Action::Reset => {}
@@ -100,7 +113,6 @@ impl Timer {
         if !matches!(self.state, State::Running(deadline) if now >= deadline) {
             return false;
         }
-        self.state = State::Ready;
         match self.phase {
             Phase::Focus => {
                 self.completed_rounds += 1;
@@ -110,10 +122,17 @@ impl Timer {
                     Phase::ShortBreak
                 };
             }
-            Phase::ShortBreak => self.phase = Phase::Focus,
-            Phase::LongBreak => *self = Self::default(),
+            Phase::ShortBreak | Phase::LongBreak => self.advance_from_break(),
         }
+        self.state = State::AwaitingChoice;
         true
+    }
+
+    fn advance_from_break(&mut self) {
+        if self.phase == Phase::LongBreak {
+            self.completed_rounds = 0;
+        }
+        self.phase = Phase::Focus;
     }
 }
 
@@ -121,6 +140,7 @@ impl Timer {
 pub(super) struct Pomodoro {
     timer: Timer,
     refresh: Option<Task<()>>,
+    reminder: Option<Task<()>>,
     label: Option<String>,
     menu_open: bool,
 }
@@ -128,6 +148,10 @@ pub(super) struct Pomodoro {
 impl Pomodoro {
     pub(super) fn in_cycle(&self) -> bool {
         self.timer.state != State::Idle
+    }
+
+    pub(super) fn awaiting_choice(&self) -> bool {
+        self.timer.state == State::AwaitingChoice
     }
 
     pub(super) fn clear_removed_session(&mut self, names: &[String]) {
@@ -148,23 +172,58 @@ impl Notch {
         }
     }
 
-    fn finish_pomodoro_phase(&mut self, now: Instant, cx: &mut Context<Self>) -> bool {
-        if !self.pomodoro.timer.finish_if_due(now) {
-            return false;
+    fn show_pomodoro_prompt(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.mode, Mode::Preview(_)) {
+            self.set_mode(self.hover_mode(), cx);
         }
         play_alert_sound(AlertSound::Pomodoro);
+        self.sync_pomodoro_reminder(cx);
         self.sync_idle_policy(cx);
         cx.notify();
-        true
+    }
+
+    fn should_repeat_pomodoro_sound(&self, cx: &App) -> bool {
+        self.pomodoro.awaiting_choice() && self.appearance.read(cx).pomodoro_repeat_sound
+    }
+
+    pub(super) fn sync_pomodoro_reminder(&mut self, cx: &mut Context<Self>) {
+        if !self.should_repeat_pomodoro_sound(cx) {
+            self.pomodoro.reminder = None;
+            return;
+        }
+        if self.pomodoro.reminder.is_some() {
+            return;
+        }
+        self.pomodoro.reminder = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(REMINDER_INTERVAL).await;
+                if !matches!(
+                    this.update(cx, |notch, cx| {
+                        if !notch.should_repeat_pomodoro_sound(cx) {
+                            return false;
+                        }
+                        play_alert_sound(AlertSound::Pomodoro);
+                        true
+                    }),
+                    Ok(true)
+                ) {
+                    break;
+                }
+            }
+        }));
     }
 
     fn pomodoro_action(&mut self, action: Action, cx: &mut Context<Self>) {
-        let now = Instant::now();
-        let finished = self.finish_pomodoro_phase(now, cx);
-        self.pomodoro.refresh = None;
-        if finished && matches!(action, Action::Toggle) {
+        if matches!(action, Action::SkipPrompt) && !self.pomodoro.awaiting_choice() {
             return;
         }
+        let now = Instant::now();
+        self.pomodoro.refresh = None;
+        if self.pomodoro.timer.finish_if_due(now) && matches!(action, Action::Toggle) {
+            self.show_pomodoro_prompt(cx);
+            return;
+        }
+        self.pomodoro.reminder = None;
         self.pomodoro.timer.apply(action, now);
         if let State::Running(deadline) = self.pomodoro.timer.state {
             self.pomodoro.refresh = Some(cx.spawn(async move |this, cx| {
@@ -177,7 +236,8 @@ impl Notch {
                         cx.background_executor().timer(next_tick).await;
                     }
                     let running = this.update(cx, |notch, cx| {
-                        if notch.finish_pomodoro_phase(Instant::now(), cx) {
+                        if notch.pomodoro.timer.finish_if_due(Instant::now()) {
+                            notch.show_pomodoro_prompt(cx);
                             return false;
                         }
                         if matches!(notch.mode, Mode::Compact | Mode::Expanded(Page::Pomodoro)) {
@@ -193,6 +253,50 @@ impl Notch {
         }
         self.sync_idle_policy(cx);
         cx.notify();
+    }
+
+    pub(super) fn pomodoro_prompt(&self, cx: &Context<Self>) -> Div {
+        let label = match self.pomodoro.timer.phase {
+            Phase::Focus => "Start next focus session",
+            Phase::ShortBreak => "Start 5 minute break",
+            Phase::LongBreak => "Start 15 minute break",
+        };
+        div()
+            .w_full()
+            .h(px(PROMPT_HEIGHT))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(7.0))
+            .px(px(12.0))
+            .border_t_1()
+            .border_color(rgba(0xffffff20))
+            .text_size(px(13.0))
+            .child(tomato(15.0))
+            .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
+            .child(
+                timer_button("pomodoro-prompt-start")
+                    .flex_none()
+                    .px(px(12.0))
+                    .bg(rgb(0x8144b8))
+                    .hover(|button| button.bg(rgb(0x9657cc)))
+                    .cursor_pointer()
+                    .child("Start")
+                    .on_click(cx.listener(|notch, _, _, cx| {
+                        if notch.pomodoro.awaiting_choice() {
+                            notch.pomodoro_action(Action::Toggle, cx);
+                        }
+                    })),
+            )
+            .child(
+                secondary_button("pomodoro-prompt-skip", true)
+                    .flex_none()
+                    .text_size(px(18.0))
+                    .child("×")
+                    .on_click(cx.listener(|notch, _, _, cx| {
+                        notch.pomodoro_action(Action::SkipPrompt, cx);
+                    })),
+            )
     }
 
     pub(super) fn compact_pomodoro(&self, now: Instant) -> Div {
@@ -216,7 +320,7 @@ impl Notch {
         let (symbol, action) = match timer.state {
             State::Running(_) => ("Ⅱ", "Pause"),
             State::Paused(_) => ("▶", "Resume"),
-            State::Ready | State::Idle => ("▶", "Start"),
+            State::Ready | State::Idle | State::AwaitingChoice => ("▶", "Start"),
         };
         div()
             .w(px(PAGE_BODY_WIDTH))
@@ -589,7 +693,7 @@ mod tests {
             assert!(!timer.finish_if_due(now - Duration::from_millis(1)));
             assert!(timer.finish_if_due(now));
             assert_eq!(timer.round(), round);
-            assert_eq!(timer.state, State::Ready);
+            assert_eq!(timer.state, State::AwaitingChoice);
             assert!(!timer.finish_if_due(now + Duration::from_secs(3600)));
             let expected_break = if round == ROUNDS {
                 Phase::LongBreak
@@ -604,9 +708,60 @@ mod tests {
             timer.apply(Action::Toggle, now);
             now += expected_break.duration();
             assert!(timer.finish_if_due(now));
+            assert_eq!(timer.phase, Phase::Focus);
+            assert_eq!(timer.state, State::AwaitingChoice);
+            assert_eq!(countdown(timer.remaining(now)), "25:00");
         }
-        assert_eq!(timer.state, State::Idle);
         assert_eq!(timer.round(), 1);
+    }
+
+    #[test]
+    fn skipping_a_break_starts_the_next_focus_and_rolls_over_after_the_fourth() {
+        for (completed_rounds, next_round) in [(0, 2), (ROUNDS - 1, 1)] {
+            let start = Instant::now();
+            let mut timer = Timer {
+                completed_rounds,
+                ..Timer::default()
+            };
+            timer.apply(Action::Toggle, start);
+            let finished = start + Phase::Focus.duration();
+            assert!(timer.finish_if_due(finished));
+
+            let skipped = finished + Duration::from_secs(40);
+            timer.apply(Action::SkipPrompt, skipped);
+            assert_eq!(timer.phase, Phase::Focus);
+            assert_eq!(timer.round(), next_round);
+            assert_eq!(
+                timer.state,
+                State::Running(skipped + Phase::Focus.duration())
+            );
+            timer.apply(Action::SkipPrompt, skipped + Duration::from_secs(1));
+            assert_eq!(
+                timer.state,
+                State::Running(skipped + Phase::Focus.duration())
+            );
+        }
+    }
+
+    #[test]
+    fn dismissing_a_focus_prompt_leaves_that_round_ready() {
+        let start = Instant::now();
+        let mut timer = Timer::default();
+        timer.apply(Action::Toggle, start);
+        let break_start = start + Phase::Focus.duration();
+        assert!(timer.finish_if_due(break_start));
+        timer.apply(Action::Toggle, break_start);
+        let break_end = break_start + Phase::ShortBreak.duration();
+        assert!(timer.finish_if_due(break_end));
+
+        timer.apply(Action::SkipPrompt, break_end);
+        assert_eq!(timer.phase, Phase::Focus);
+        assert_eq!(timer.round(), 2);
+        assert_eq!(timer.state, State::Ready);
+        assert_eq!(
+            timer.remaining(break_end + Duration::from_secs(40)),
+            Phase::Focus.duration()
+        );
     }
 
     #[test]
@@ -616,13 +771,18 @@ mod tests {
         timer.apply(Action::Toggle, start);
         let break_start = start + Phase::Focus.duration();
         assert!(timer.finish_if_due(break_start));
+        timer.apply(Action::Reset, break_start);
+        assert_eq!(timer.state, State::Ready);
         timer.apply(Action::Toggle, break_start);
         let later = break_start + Duration::from_secs(10);
         timer.apply(Action::Reset, later);
         assert_eq!(timer.state, State::Ready);
         assert_eq!(timer.phase, Phase::ShortBreak);
         assert_eq!(countdown(timer.remaining(later)), "05:00");
-        timer.apply(Action::Stop, later);
+        timer.apply(Action::Toggle, later);
+        let break_end = later + Phase::ShortBreak.duration();
+        assert!(timer.finish_if_due(break_end));
+        timer.apply(Action::Stop, break_end);
         assert_eq!(timer.state, State::Idle);
         assert_eq!(timer.phase, Phase::Focus);
         assert_eq!(timer.round(), 1);
