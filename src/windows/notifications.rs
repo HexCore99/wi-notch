@@ -11,10 +11,7 @@ use ::windows::{
         NotificationKinds, UserNotification,
     },
     Win32::{
-        Foundation::{
-            E_ACCESSDENIED, E_INVALIDARG, ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER,
-        },
-        Storage::Packaging::Appx::GetCurrentPackageFullName,
+        Foundation::{E_ACCESSDENIED, E_INVALIDARG, ERROR_FILE_NOT_FOUND},
         System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize},
         UI::{
             Shell::{SEE_MASK_FLAG_NO_UI, SHELLEXECUTEINFOW, ShellExecuteExW},
@@ -30,7 +27,6 @@ use super::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Access {
-    Unpackaged,
     Unavailable,
     Unspecified,
     Denied,
@@ -131,11 +127,6 @@ fn open_start_app(app_id: &str) -> ::windows::core::Result<()> {
 
 impl Listener {
     pub fn connect() -> Result<Self, Access> {
-        let mut length = 0;
-        if unsafe { GetCurrentPackageFullName(&mut length, None) } != ERROR_INSUFFICIENT_BUFFER {
-            return Err(Access::Unpackaged);
-        }
-
         UserNotificationListener::Current()
             .map(Self)
             .map_err(|_| Access::Unavailable)

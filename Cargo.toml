@@ -1,6 +1,6 @@
 [package]
 name = "wi-notch"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 edition = "2024"
 
 [dependencies]
@@ -26,7 +26,6 @@ windows = { version = "0.61", features = [
   "Win32_Graphics_Gdi",
   "Win32_Media_Audio_Endpoints",
   "Win32_Storage_EnhancedStorage",
-  "Win32_Storage_Packaging_Appx",
   "Win32_System_Com_StructuredStorage",
   "Win32_System_LibraryLoader",
   "Win32_System_Registry",

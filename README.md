@@ -8,27 +8,17 @@ wi-notch is a desktop overlay for Windows 11. It puts the clock, media controls,
 
 ## Download and run
 
-1. Download the Windows x64 ZIP from [GitHub Releases](https://github.com/HexCore99/wi-notch/releases).
-2. Extract the ZIP and run `wi-notch.exe`.
+1. Download the Windows x64 executable from [GitHub Releases](https://github.com/HexCore99/wi-notch/releases).
+2. Open the downloaded `.exe`.
 3. Hover over the clock. Use the side arrows to switch views, click the date to open the calendar, or click the gear for Settings.
 
-The download includes a portable app and an optional registration step for Windows notifications. Use Task Manager to end the wi-notch process if you need to close the overlay.
+The app runs directly from the downloaded file. Use Task Manager to end the wi-notch process if you need to close the overlay.
 
-If Windows reports that `VCRUNTIME140.dll` is missing, install the Microsoft Visual C++ Redistributable for x64. [Microsoft's runtime downloads](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)
+### Windows notifications
 
-### Enable Windows notifications
+Click the bell to open the notification center. If wi-notch asks you to enable access, select **Enable Windows notifications** and approve the Windows prompt.
 
-Windows requires package registration and your permission to let wi-notch read notifications. The ZIP includes the registration manifest. Enable Developer Mode and extract the ZIP to a folder you plan to keep. [Microsoft's loose-file registration guide](https://learn.microsoft.com/en-us/windows/apps/develop/testing/loose-file-registration)
-
-Close any running copy of wi-notch. Run the following command from PowerShell in the extracted folder.
-
-```powershell
-Add-AppxPackage -Register (Resolve-Path .\AppxManifest.xml).Path
-```
-
-Open **wi-notch (Preview)** from Start. Hover over the notch, click the bell, and choose **Enable Windows notifications**. To unregister the preview later, run `Get-AppxPackage -Name HexCore99.WiNotch.Preview | Remove-AppxPackage`.
-
-wi-notch keeps notification text in memory. It uses a read-only lookup of Windows notification history to open specific notifications from supported browsers.
+The portable notification listener was verified on Windows 11 26H2. Availability can vary by Windows build and privacy settings. wi-notch keeps notification text in memory. It uses a read-only lookup of Windows notification history to open specific notifications from supported browsers.
 
 ## Features
 
@@ -52,7 +42,7 @@ cargo run --locked
 cargo test --locked
 ```
 
-The application is built with Rust and GPUI. To test Windows notification access from a source checkout, register the development package. [GPUI documentation](https://docs.rs/gpui/0.2.2/gpui/) · [Development packaging guide](packaging/README.md)
+The application is built with Rust and GPUI. The development package is available for testing package registration and notification access. [GPUI documentation](https://docs.rs/gpui/0.2.2/gpui/) · [Development packaging guide](packaging/README.md)
 
 ## Feedback
 

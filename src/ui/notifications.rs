@@ -319,9 +319,6 @@ impl Notifications {
         self.visible_since.clear();
 
         let message = match self.access {
-            Access::Unpackaged => {
-                "Launch a registered copy of wi-notch to read Windows notifications."
-            }
             Access::Unavailable => "Windows notification access is unavailable.",
             Access::Denied => {
                 "Allow wi-notch in Windows Settings under Privacy & security → Notifications."
